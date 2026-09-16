@@ -1,0 +1,37 @@
+# Die Datenbank ist der Bestand, nicht der Quelltext: 4 MB, aendert sich bei
+# jedem remember, und Git delta-komprimiert SQLite praktisch nicht. Gesichert
+# wird sie per VACUUM INTO nach drive:Projekte/claude-memory-db/.
+memory.db
+memory.db-wal
+memory.db-shm
+memory.db.vor-*
+
+# Handgemachte Sicherungen aus der Zeit vor diesem Repo. Ihr Inhalt steckt
+# seit dem 2026-09-15 in der Historie.
+*.py.vor-*
+
+.venv/
+__pycache__/
+
+# Messung: veroeffentlicht werden die BERICHTE (die vier .md), nicht das
+# Werkzeug dahinter. Die Skripte laufen ohnehin nur gegen den eigenen Bestand,
+# und die Rohdaten sind woertliche Mitschriften echter Arbeitssitzungen -
+# ergebnis.json und zielsicher.json enthalten die tatsaechlich gestellten
+# Fragen samt Projektnamen, ms_stand4.py ist eine Kopie des alten Servers mit
+# un-anonymisierten Beispielen. Bleibt alles lokal.
+messung/*.py
+messung/*.json
+messung/korpus_*/
+messung/*.db
+
+# Lokales Deployment-Werkzeug samt Zugangsdatei. Hat mit diesem Projekt nichts
+# zu tun und traegt ein API-Token - nie hier committen.
+zg.py
+.zg_config.json
+
+# Einmalige, bereits gelaufene Reparaturskripte (vor Schemastand 5). Ihre
+# Zuordnungstabellen tragen die echten Tag-Namen eines bestimmten Bestandes
+# hart codiert und sind fuer andere nicht sinnvoll wiederverwendbar.
+migration_art.py
+migration_marken.py
+migration_zeitstempel.py

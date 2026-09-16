@@ -1,0 +1,62 @@
+[
+  {
+    "warum": "Am 2026-09-14 zuerst als WIDERSPRUCH eingetragen, nach dem ersten Lauf berichtigt: #1101 sagt 'Ab 2026-09-10 nur noch ueber die Werkzeuge' und kuendigt damit eine Aenderung an; #1044 beschreibt den Stand davor. Beide waren zu ihrer Zeit richtig. Dass #1044 danach noch als lebende Anweisung im Bestand stand, ist ein Pflegefehler und keine logische Unvereinbarkeit - das Modell soll hier die Relation beurteilen, nicht die Kuration.",
+    "a_id": 1044,
+    "b_id": 1101,
+    "soll": "FORTSCHRITT"
+  },
+  {
+    "warum": "Gebaut gegen #1126. Derselbe Bestand, derselbe Tag, unvereinbare Messung.",
+    "a": "FTS5-Fallstrick: ein POSITIVER Zeilenfilter neben `ORDER BY rank LIMIT n` kostet das Zwanzigfache. Gemessen 2026-09-11 am vollen Bestand: 0,6 ms ohne, 12,4 ms mit.",
+    "b": "Der positive Zeilenfilter neben `ORDER BY rank LIMIT n` kostet nichts Messbares. Gemessen 2026-09-11 am vollen Bestand: 0,6 ms mit Filter wie ohne.",
+    "soll": "WIDERSPRUCH"
+  },
+  {
+    "warum": "Gebaut gegen #1352. Beide Saetze beschreiben den Stand vom 2026-09-14, einer sagt zwei Sperrfristen, der andere eine.",
+    "a": "Zwei Sperrfristen im Faktencheck statt einer pauschalen (Stand 2026-09-14): `ConnectionRefusedError` bekommt 15 s, alles andere 300 s.",
+    "b": "Der Faktencheck sperrt seit 2026-09-14 nach jedem Fehlschlag pauschal 300 s. Nach der Fehlerart zu unterscheiden hat sich nicht bewaehrt.",
+    "soll": "WIDERSPRUCH"
+  },
+  {
+    "warum": "Gebaut gegen #1050. Dieselbe Messung, die Richtung umgedreht.",
+    "a": "Komposita 31/60 fuer recall gegen 57/60 fuer grep - das ist die Kehrseite der Rangfolge.",
+    "b": "Komposita 57/60 fuer recall gegen 31/60 fuer grep - die Wortteilsuche schlaegt die Teilzeichenkette klar.",
+    "soll": "WIDERSPRUCH"
+  },
+  {
+    "warum": "Gebaut: derselbe Gegenstand, unvereinbare Aussage ueber denselben Zustand. Sicherheitsrelevant, deshalb im Satz.",
+    "a": "`memory.db` steht auf der Ignore-Liste des Deployments - die Inhalte des Gedaechtnisses gehoeren nicht auf den Server.",
+    "b": "`memory.db` wird vom Deployment mitgesichert; das Zielrepo enthaelt die Datenbank samt Inhalten.",
+    "soll": "WIDERSPRUCH"
+  },
+  {
+    "warum": "Gebaut gegen #1327. Gleiches Geraet, gleicher Build, gleicher Tag, dreifach abweichende Zahl.",
+    "a": "Qwen3-VL-2B im Build P320-CTX448 auf dem AX630C: Prefill 38,4 Tok/s, TTFT 681 ms bei 24 Token, CMM 1855 MB.",
+    "b": "Qwen3-VL-2B im Build P320-CTX448 auf dem AX630C: Prefill 12,1 Tok/s, TTFT 2,4 s bei 24 Token, CMM 1855 MB.",
+    "soll": "WIDERSPRUCH"
+  },
+  {
+    "warum": "Gegenprobe im gebauten Teil: sieht aus wie ein Widerspruch (gleiche Woerter, andere Zahl), ist aber ein Fortschrittsstand. Ohne so ein Paar misst der gebaute Teil nur die Empfindlichkeit.",
+    "a": "**Stand 0.4 (2026-09-10):** 41 Lua-Dateien + Tests, 2079 gruene Pruefungen.",
+    "b": "**Stand 0.5 (2026-09-11):** 44 Lua-Dateien + Tests, 2361 gruene Pruefungen.",
+    "soll": "FORTSCHRITT"
+  },
+  {
+    "warum": "Echter Widerspruch aus dem Bestand: #1169 nimmt die Darstellung aus #1168 als damals schon falsch zurueck ('die \"Crew winkt ihn liebevoll weg\"-Framing war falsch'). Kein Zeitverlauf, eine Ruecknahme.",
+    "a_id": 1168,
+    "b_id": 1169,
+    "soll": "WIDERSPRUCH"
+  },
+  {
+    "warum": "Gegenprobe zur Korrekturheuristik: enthaelt 'widerlegt', ist aber Fortschritt. #1181 stellt zwei Lesarten auf und sagt ausdruecklich 'Segment 6 entscheidet, vorher nichts am Plan aendern'; #1332 berichtet den Ausgang. Widerlegt wurde eine Hypothese durch eine Messung, nicht eine Behauptung zurueckgenommen.",
+    "a_id": 1181,
+    "b_id": 1332,
+    "soll": "FORTSCHRITT"
+  },
+  {
+    "warum": "Zweite Gegenprobe: enthaelt 'Revidiert', ist aber Fortschritt. #1272 sagt ausdruecklich 'MIT DER AKTUELLEN QUANTISIERUNGSKONFIGURATION nicht einsatzreif'; #1298 aendert genau diese Konfiguration (layer_configs U16). Die Bedingung steht im alten Text, also waren beide zu ihrer Zeit richtig.",
+    "a_id": 1272,
+    "b_id": 1298,
+    "soll": "FORTSCHRITT"
+  }
+]
