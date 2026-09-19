@@ -19,6 +19,7 @@ nie geoeffnet; der Laeufer prueft das, bevor er irgendetwas aufruft.
 import os
 import sqlite3
 import shutil
+import sys
 import tempfile
 import time
 import traceback
@@ -28,6 +29,7 @@ from pathlib import Path
 # kostet jeder Test die Vorprobe, und das Ergebnis haengt am Netz.
 os.environ["MEMORY_FC_AUS"] = "1"
 
+import import_memos as im  # noqa: E402
 import memory_server as ms  # noqa: E402
 from morphologie import teile_spalte, wortschatz  # noqa: E402
 
@@ -503,6 +505,80 @@ def test_verzeichnis_vergisst_marken_veralteter_eintraege():
 # --------------------------------------------------------------------------
 # Laeufer
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Import
+# --------------------------------------------------------------------------
+def test_import_schreibt_in_den_speicher_von_stand_5():
+    """Der Import schrieb nach `mem` - der Tabelle VOR Schemastand 5.
+
+    Auf einer heutigen Datenbank brach er damit schon beim Einlesen des
+    vorhandenen Bestandes ab ("no such table: mem"), `--trocken`
+    eingeschlossen. Unbemerkt blieb das, weil kein Test ihn je aufrief: er
+    galt als einmaliges Werkzeug, das nie wieder laeuft - fuer jeden Fremden
+    ist er aber der erste Befehl ueberhaupt. Der Test prueft den ganzen Weg
+    bis in den FTS-Index, denn den fuellen seit Stand 5 die Trigger und nicht
+    mehr der Aufrufer.
+    """
+    ordner = ms.DB_PATH.parent / "memos"
+    ordner.mkdir()
+    (ordner / "beispiel.md").write_text(
+        "---\nmodified: 2026-01-02\n---\n\n"
+        "Ein Absatz, lang genug fuer die Mindestzeichenzahl von vierzig Zeichen.\n"
+    )
+
+    def lauf(*argumente):
+        alt = sys.argv
+        sys.argv = ["import_memos.py", str(ordner), *argumente]
+        try:
+            return im.main()
+        finally:
+            sys.argv = alt
+
+    assert lauf("--trocken") == 0
+    conn = ms._connect()
+    assert conn.execute("SELECT count(*) FROM eintrag").fetchone()[0] == 0
+    conn.close()
+
+    assert lauf() == 0
+    conn = ms._connect()
+    zeilen = conn.execute("SELECT content, tags, ts, art FROM eintrag").fetchall()
+    treffer = conn.execute(
+        "SELECT rowid FROM suche WHERE suche MATCH 'Mindestzeichenzahl'"
+    ).fetchall()
+    conn.close()
+    assert len(zeilen) == 1, zeilen
+    assert zeilen[0][1] == "beispiel", zeilen
+    assert zeilen[0][2] == "2026-01-02 00:00:00", zeilen
+    assert zeilen[0][3] == ms.UNSORTIERT, zeilen
+    assert len(treffer) == 1, "der Trigger hat den Index nicht gefuellt"
+
+    # Mehrfach aufrufbar: derselbe Absatz kommt kein zweites Mal herein.
+    assert lauf() == 0
+    conn = ms._connect()
+    assert conn.execute("SELECT count(*) FROM eintrag").fetchone()[0] == 1
+    conn.close()
+
+
+def test_import_ohne_argument_nennt_die_vorhandenen_ordner():
+    """Ohne Pfad wird der Ordner aus dem Arbeitsverzeichnis geraten - und
+    trifft fast nie, weil man im Repo steht und nicht im gemeinten Projekt.
+    Das blosse "Kein Ordner" liess den Fremden dann raten; der Hinweis muss
+    die tatsaechlich vorhandenen Ordner nennen."""
+    wurzel = ms.DB_PATH.parent / "projects"
+    (wurzel / "-ein-projekt" / "memory").mkdir(parents=True)
+    (wurzel / "-ein-projekt" / "memory" / "a.md").write_text("Text")
+    (wurzel / "-leer" / "memory").mkdir(parents=True)  # ohne *.md: kein Kandidat
+    alt_wurzel, alt_argv = im.PROJEKTWURZEL, sys.argv
+    im.PROJEKTWURZEL = wurzel
+    sys.argv = ["import_memos.py"]
+    try:
+        assert im.main() == 1
+        kandidaten = im._kandidaten()
+    finally:
+        im.PROJEKTWURZEL, sys.argv = alt_wurzel, alt_argv
+    assert kandidaten == [wurzel / "-ein-projekt" / "memory"], kandidaten
+
+
 def main() -> int:
     faelle = [(n, f) for n, f in sorted(globals().items())
               if n.startswith("test_") and callable(f)]

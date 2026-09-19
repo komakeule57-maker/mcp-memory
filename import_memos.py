@@ -6,6 +6,10 @@ je ein Eintrag liefern bei limit=10 rund 261 KB zurueck statt 5,7 KB.
 
 Mehrfach aufrufbar - bereits vorhandene Absaetze werden uebersprungen.
 
+Geschrieben wird in `eintrag`, den Speicher ab Schemastand 5; den FTS-Index
+`suche` ziehen die Trigger nach. Die neuen Eintraege tragen die Art 'gemischt'
+und bekommen sie beim Lesen per einordnen().
+
     python3 import_memos.py [ordner] [--trocken] [--mit-index]
 
 --mit-index nimmt zusaetzlich MEMORY.md auf, und zwar zeilenweise statt
@@ -25,13 +29,28 @@ from morphologie import stamm_spalte, teile_spalte
 
 # Claude Code legt sein Datei-Gedaechtnis unter ~/.claude/projects/<projekt>/memory
 # ab, wobei <projekt> der Arbeitsordner mit Schraegstrichen als Bindestrich ist.
-# Ohne Argument wird daraus der Ordner fuer das aktuelle Verzeichnis geraten;
-# stimmt das nicht, den Pfad einfach mitgeben.
-STANDARD_ORDNER = (
-    Path.home() / ".claude/projects"
-    / ("-" + str(Path.cwd()).strip("/").replace("/", "-"))
-    / "memory"
-)
+# Ohne Argument wird daraus der Ordner fuer das aktuelle Verzeichnis geraten -
+# das trifft aber nur zu, wenn man IM gemeinten Projekt steht, und fast niemand
+# tut das, weil das Skript hier im Repo liegt. Der Rateschluss bleibt trotzdem
+# richtig; was fehlte, war die Hilfe beim Danebenliegen: statt nur "Kein Ordner"
+# zeigt `_kandidaten()` die tatsaechlich vorhandenen Memory-Ordner des Rechners.
+PROJEKTWURZEL = Path.home() / ".claude/projects"
+
+
+def standard_ordner() -> Path:
+    return PROJEKTWURZEL / ("-" + str(Path.cwd()).strip("/").replace("/", "-")) / "memory"
+
+
+def _kandidaten() -> list:
+    """Alle Memory-Ordner auf diesem Rechner, die ueberhaupt Memos enthalten."""
+    if not PROJEKTWURZEL.is_dir():
+        return []
+    return sorted(
+        p for p in PROJEKTWURZEL.glob("*/memory")
+        if p.is_dir() and any(p.glob("*.md"))
+    )
+
+
 INDEX = "MEMORY.md"          # der Index selbst gehoert nicht in die Datenbank
 MIN_ZEICHEN = 40             # Ueberschriften und Fragmente bringen nichts
 MAX_ZEICHEN = 1200           # darueber zerteilen: ein einziger Riesenabsatz frisst
@@ -84,9 +103,21 @@ def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     trocken = "--trocken" in sys.argv
     mit_index = "--mit-index" in sys.argv
-    ordner = Path(args[0]).expanduser() if args else STANDARD_ORDNER
+    ordner = Path(args[0]).expanduser() if args else standard_ordner()
     if not ordner.is_dir():
         print(f"Kein Ordner: {ordner}")
+        if not args:
+            print("Ohne Argument wird der Ordner aus dem Arbeitsverzeichnis geraten -")
+            print("gemeint ist das Projekt, dessen Memory importiert werden soll,")
+            print("nicht der Ordner, in dem dieses Skript liegt.")
+            gefunden = _kandidaten()
+            if gefunden:
+                print("Auf diesem Rechner liegen Memos in:")
+                for k in gefunden:
+                    print(f"    {k}")
+                print(f"Also z.B.: python3 {Path(sys.argv[0]).name} {gefunden[0]}")
+            else:
+                print(f"Unter {PROJEKTWURZEL}/*/memory liegt keiner - Pfad mitgeben.")
         return 1
 
     dateien = sorted(p for p in ordner.glob("*.md") if p.name != INDEX)
@@ -103,7 +134,7 @@ def main() -> int:
         # genau so sind am 2026-09-10 35 Doppler entstanden.
         bekannt = {
             re.sub(r"\s+", " ", r[0]).strip()
-            for r in conn.execute("SELECT content FROM mem")
+            for r in conn.execute("SELECT content FROM eintrag")
         }
         neu = uebersprungen = 0
         for pfad in dateien:
@@ -138,7 +169,8 @@ def main() -> int:
                         continue
                     volltext = f"{absatz} {marke}"
                     conn.execute(
-                        "INSERT INTO mem (content, tags, ts, stems, teile) VALUES (?,?,?,?,?)",
+                        "INSERT INTO eintrag (content, tags, ts, stems, teile)"
+                        " VALUES (?,?,?,?,?)",
                         (
                             absatz,
                             marke,
@@ -150,7 +182,7 @@ def main() -> int:
                     neu += 1
         if not trocken:
             conn.commit()
-        gesamt = conn.execute("SELECT count(*) FROM mem").fetchone()[0]
+        gesamt = conn.execute("SELECT count(*) FROM eintrag").fetchone()[0]
     finally:
         conn.close()
 
