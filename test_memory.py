@@ -16,6 +16,9 @@ Testlauf ist kein Grund, damit anzufangen.
 nie geoeffnet; der Laeufer prueft das, bevor er irgendetwas aufruft.
 """
 
+import contextlib
+import importlib
+import io
 import os
 import re
 import sqlite3
@@ -633,14 +636,91 @@ def test_pruefstand_baut_den_satz_aus_dem_speicher():
     assert paare, "kein einziges Pruefpaar aus dem Bestand gebaut"
 
 
+def test_jedes_skript_laeuft_trocken_gegen_eine_stand_5_datenbank():
+    """Die Probe, die kein Muster ist: SQLite antwortet, nicht die Regex.
+
+    Der Waechter darunter liest Quelltext und sitzt damit in derselben
+    Werkzeugklasse, die hier zweimal danebengriff - ein Muster prueft nur,
+    woran der Schreiber schon gedacht hat. Beim ersten Mal war es die
+    Gross-/Kleinschreibung, beim zweiten eine Anfrage, die in einer Variablen
+    stand. Ein Tabellenname aus einem f-String oder einer importierten
+    Konstante geht an jeder Textsuche vorbei, so fein sie auch ist.
+
+    Dieser Fall sucht darum nicht nach Namen. Er ruft jedes Skript einmal
+    trocken gegen eine frische Stand-5-Datenbank auf - jedes hat einen
+    Trockenlauf, das ist kein Zufall, sondern die Bauart des Projekts. Nennt
+    eines eine Tabelle, die es nicht mehr gibt, meldet das die Datenbank
+    selbst, ganz gleich, wie der Name zustande kam.
+
+    Die Grenze dieser Probe ist die andere als die des Waechters, und darum
+    stehen beide da: ausgefuehrt wird nur, was der Trockenlauf anfaesst. Der
+    INSERT-Zweig von import_memos.py etwa haengt am Fall darueber, nicht an
+    diesem hier.
+    """
+    ordner = Path(__file__).resolve().parent
+    erst = ms.remember("Die Lernrate bleibt konstant, weil der Zerfall die Schritte erstickt.",
+                       tags="probe", art="entscheidung")
+    ms.remember("Korrektur: der geometrische Zerfall ist widerlegt, es lag am Aufwaermen.",
+                tags="probe", art="entscheidung", ersetzt=re.search(r"#(\d+)", erst).group(1))
+    memos = ms.DB_PATH.parent / "memos"
+    memos.mkdir()
+    (memos / "beispiel.md").write_text(
+        "Ein Absatz, lang genug fuer die Mindestzeichenzahl von vierzig Zeichen.\n"
+    )
+
+    proben = {
+        "import_memos.py": [str(memos), "--trocken"],
+        "nachziehen.py": ["--probe"],
+        "pruefstand_fc.py": ["--db", str(ms.DB_PATH), "--trocken"],
+        "migration_art.py": ["--db", str(ms.DB_PATH), "--trocken"],
+    }
+    # Wer hier steht, hat nichts auszufuehren - mit Grund, nicht aus Bequemlichkeit.
+    ohne_probe = {
+        "memory_server.py": "der Server selbst; die 30 Faelle darueber sind seine Probe",
+        "morphologie.py": "rechnet auf Zeichenketten, oeffnet nie eine Datenbank",
+        "faktencheck.py": "spricht HTTP mit dem Board, kein SQL",
+        Path(__file__).name: "diese Datei",
+    }
+
+    # Ein neues Skript darf nicht unbemerkt dazukommen: es muss entweder eine
+    # Probe haben, begruendet befreit oder ausdruecklich eingefroren sein.
+    vorhanden = {pfad.name for pfad in ordner.glob("*.py")}
+    eingefroren = {
+        pfad.name for pfad in ordner.glob("*.py")
+        if "SCHEMASTAND 4 - eingefroren" in pfad.read_text(encoding="utf-8")
+    }
+    unbekannt = vorhanden - set(proben) - set(ohne_probe) - eingefroren
+    assert not unbekannt, (
+        "Skript ohne Trockenlauf-Probe: " + ", ".join(sorted(unbekannt))
+        + " - in `proben` eintragen, in `ohne_probe` begruenden oder einfrieren."
+    )
+
+    for name in sorted(set(proben) & vorhanden):
+        modul = importlib.import_module(name[:-3])
+        alt = sys.argv
+        sys.argv = [name, *proben[name]]
+        gesagt = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(gesagt):
+                ergebnis = modul.main()
+        except Exception as fehler:
+            raise AssertionError(f"{name} laeuft nicht trocken durch: {fehler!r}") from fehler
+        finally:
+            sys.argv = alt
+        assert ergebnis == 0, f"{name} meldet {ergebnis}:\n{gesagt.getvalue()[-400:]}"
+
+
 def test_kein_lebendes_skript_liest_die_tabellen_vor_stand_5():
-    """Der Waechter ueber die ganze Kategorie.
+    """Das zweite Netz, und ausdruecklich das schwaechere.
 
     Ein Grep von Hand hatte `pruefstand_fc.py` uebersehen, weil dort `from
     mem` klein geschrieben steht und in `migration_zeitstempel.py` sogar in
-    einer Variablen - eine Vermutung ist kein Test. Also prueft ihn die
-    Testreihe: kein Skript im Ordner nennt `mem`, `art` oder `kette`, die
-    Tabellen vor Schemastand 5.
+    einer Variablen - eine Vermutung ist kein Test. Dieser Fall ist die
+    breitere Suche, aber er bleibt eine Suche: einen Namen aus einem f-String
+    findet er nicht. Das tut die Ausfuehrungsprobe darueber, und sie steht
+    deshalb zuerst. Was dieser hier dafuer kann: er sieht auch die Zeilen, die
+    kein Trockenlauf je betritt - kein Skript im Ordner nennt `mem`, `art`
+    oder `kette`, die Tabellen vor Schemastand 5.
 
     Zwei Ausnahmen, beide begruendet: `memory_server.py` MUSS die alten Namen
     kennen, es zieht die Datenbank um (`_umzug_auf_5`, `_schattenbestand_bergen`),
