@@ -139,7 +139,7 @@ def _von_hand_benannt() -> set:
 
 def satz(conn, leicht=12, schwer=12, schwelle=0.30):
     """Baut den Pruefsatz aus dem Bestand. Deterministisch bei gleichem Bestand."""
-    txt = dict(conn.execute("SELECT rowid, content FROM mem"))
+    txt = dict(conn.execute("SELECT id, content FROM eintrag"))
     ersetzt = [
         (a, b)
         for a, b in conn.execute("SELECT id, durch FROM veraltet WHERE durch IS NOT NULL")
@@ -356,7 +356,7 @@ def main():
 
     conn = sqlite3.connect(args.db)
     try:
-        bestand = conn.execute("SELECT count(*) FROM mem").fetchone()[0]
+        bestand = conn.execute("SELECT count(*) FROM eintrag").fetchone()[0]
         paare = satz(conn, leicht=args.leicht, schwer=args.schwer)
     finally:
         conn.close()

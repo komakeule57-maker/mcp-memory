@@ -17,6 +17,7 @@ nie geoeffnet; der Laeufer prueft das, bevor er irgendetwas aufruft.
 """
 
 import os
+import re
 import sqlite3
 import shutil
 import sys
@@ -31,6 +32,8 @@ os.environ["MEMORY_FC_AUS"] = "1"
 
 import import_memos as im  # noqa: E402
 import memory_server as ms  # noqa: E402
+import nachziehen  # noqa: E402
+import pruefstand_fc  # noqa: E402
 from morphologie import teile_spalte, wortschatz  # noqa: E402
 
 ECHTE_DB = Path(__file__).resolve().parent / "memory.db"
@@ -577,6 +580,90 @@ def test_import_ohne_argument_nennt_die_vorhandenen_ordner():
     finally:
         im.PROJEKTWURZEL, sys.argv = alt_wurzel, alt_argv
     assert kandidaten == [wurzel / "-ein-projekt" / "memory"], kandidaten
+
+
+# --------------------------------------------------------------------------
+# Die Skripte neben dem Server
+# --------------------------------------------------------------------------
+# Sie kennen Tabellennamen, laufen selten und hatten bis 2026-09-19 keinen
+# einzigen Test. Genau darum rosteten `import_memos.py`, `migration_art.py`
+# und `pruefstand_fc.py` beim Umzug auf Schemastand 5 lautlos weg: der Server
+# wurde mitgenommen, sie nicht. Jedes Skript, das eine Tabelle beim Namen
+# nennt, bekommt hier einen Fall - und der Waechter darunter faengt das
+# naechste, an das niemand gedacht hat.
+def test_nachziehen_laeuft_als_skript_durch():
+    """`nachziehen.py` fragt `marken` und `eintrag.kopf` selbst ab, nicht ueber
+    memory_server. test_nachziehen_konvergiert prueft die Bibliotheksfunktion
+    dahinter - nicht die vier Zeilen SQL im Skript, und genau die sind es, die
+    beim naechsten Schemaschritt brechen."""
+    ms.remember("Fusionskatalysator im Reaktor, ein Eintrag mit Marke", tags="probe",
+                art="fallstrick")
+    alt = sys.argv
+    sys.argv = ["nachziehen.py", "--probe"]
+    try:
+        assert nachziehen.main() == 0
+        sys.argv = ["nachziehen.py"]
+        assert nachziehen.main() == 0
+    finally:
+        sys.argv = alt
+    conn = ms._connect()
+    marken = {r[0] for r in conn.execute("SELECT marke FROM marken")}
+    conn.close()
+    assert "probe" in marken, marken
+
+
+def test_pruefstand_baut_den_satz_aus_dem_speicher():
+    """`pruefstand_fc.satz()` las `mem` und brach damit auf jeder heutigen
+    Datenbank ab - auch bei `--trocken`, das gar kein Board braucht. Der Fall
+    kommt ohne Geraet aus: gemessen wird nur, dass der Satz aus dem Bestand
+    entsteht und die `ersetzt=`-Beziehung aus `veraltet` ankommt."""
+    a = ms.remember("Die Lernrate bleibt konstant, weil der Zerfall die Schritte erstickt.",
+                    tags="probe", art="entscheidung")
+    ms.remember("Korrektur: der geometrische Zerfall ist widerlegt, es lag am Aufwaermen.",
+                tags="probe", art="entscheidung", ersetzt=re.search(r"#(\d+)", a).group(1))
+    ms.remember("Ein harmloser Absatz ueber ganz andere Dinge, naemlich Schiffe.",
+                tags="probe", art="verlauf")
+    conn = ms._connect()
+    try:
+        paare = pruefstand_fc.satz(conn, leicht=2, schwer=2)
+        bestand = conn.execute("SELECT count(*) FROM eintrag").fetchone()[0]
+    finally:
+        conn.close()
+    assert bestand == 3
+    assert paare, "kein einziges Pruefpaar aus dem Bestand gebaut"
+
+
+def test_kein_lebendes_skript_liest_die_tabellen_vor_stand_5():
+    """Der Waechter ueber die ganze Kategorie.
+
+    Ein Grep von Hand hatte `pruefstand_fc.py` uebersehen, weil dort `from
+    mem` klein geschrieben steht und in `migration_zeitstempel.py` sogar in
+    einer Variablen - eine Vermutung ist kein Test. Also prueft ihn die
+    Testreihe: kein Skript im Ordner nennt `mem`, `art` oder `kette`, die
+    Tabellen vor Schemastand 5.
+
+    Zwei Ausnahmen, beide begruendet: `memory_server.py` MUSS die alten Namen
+    kennen, es zieht die Datenbank um (`_umzug_auf_5`, `_schattenbestand_bergen`),
+    und diese Datei nennt sie in den Regressionsfaellen dazu. Ein Einmal-Skript,
+    das bewusst auf dem alten Stand einfriert, sagt das mit der Zeile
+    'SCHEMASTAND 4 - eingefroren' und ist damit heraus - aber ausdruecklich,
+    nicht aus Versehen."""
+    alt = re.compile(r"\b(from|into|update|join)\s+(mem|art|kette)\b", re.I)
+    ausnahmen = {"memory_server.py", Path(__file__).name}
+    gefunden = []
+    for pfad in sorted(Path(__file__).resolve().parent.glob("*.py")):
+        if pfad.name in ausnahmen:
+            continue
+        text = pfad.read_text(encoding="utf-8")
+        if "SCHEMASTAND 4 - eingefroren" in text:
+            continue
+        for nr, zeile in enumerate(text.splitlines(), 1):
+            if alt.search(zeile):
+                gefunden.append(f"  {pfad.name}:{nr}: {zeile.strip()}")
+    assert not gefunden, (
+        "Tabellen von vor Schemastand 5 in einem lebenden Skript:\n"
+        + "\n".join(gefunden)
+    )
 
 
 def main() -> int:
