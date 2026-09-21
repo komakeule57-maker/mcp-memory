@@ -87,12 +87,13 @@ The database is created on first use as `memory.db` next to the script.
 document.** `recall` returns whole entries — store a 180 KB file as a
 single entry and you get it back as a single hit, having gained nothing.
 
-## The Eight Tools
+## The Nine Tools
 
 | | |
 |---|---|
 | `remember(text, tags, art, ersetzt)` | store an entry; reports similar existing ones and what it would supersede |
 | `recall(query, limit, art, marke, …)` | ranked full-text search, preview by default |
+| `frage(frage, marke, art, limit)` | turns a whole question into search terms; top hit in full, rest as preview — no synthesis |
 | `zeige(ids)` | full text of specific entries |
 | `themen(marke, limit)` | browse: which projects exist, or one project's title lines |
 | `vergessen(ids, grund)` | mark as outdated — never deletes |
@@ -125,7 +126,7 @@ Where a measurement did not survive a larger sample, it says so:
 
 | | |
 |---|---|
-| [docs/TOOLS.md](docs/TOOLS.md) | all eight tools in detail |
+| [docs/TOOLS.md](docs/TOOLS.md) | all nine tools in detail |
 | [docs/DESIGN.md](docs/DESIGN.md) | the two axes, the morphology, the database schema, and what was left out on purpose |
 | [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md) | what was measured, and the known limitations |
 | [docs/FACTCHECK.md](docs/FACTCHECK.md) | the opt-in fact check: setup, what it can and cannot do |
@@ -151,7 +152,7 @@ output, glossed in English where it first appears.
 
 | | |
 |---|---|
-| `memory_server.py` | MCP server, eight tools, search cascade, schema, migrations |
+| `memory_server.py` | MCP server, nine tools, search cascade, schema, migrations |
 | `morphologie.py` | stemmer and compound splitter |
 | `nachziehen.py` | recomputes `stems`/`teile` and refreshes the tag directory |
 | `faktencheck.py` | opt-in second opinion via any OpenAI-compatible model (off unless configured) |

@@ -357,6 +357,98 @@ def test_fortsetzung_erkennt_fuehrende_auszeichnung():
 
 
 # --------------------------------------------------------------------------
+# frage()
+# --------------------------------------------------------------------------
+def test_fragewoerter_streicht_stoppwoerter():
+    """Interrogative und Hilfsverben duerfen die AND-Stufe der Kaskade nicht
+    fuellen - sonst zaehlt "warum" genauso wie das eigentliche Suchwort."""
+    assert ms._fragewoerter("Warum nutzt SnAI LoRA statt Full-Finetune?") == [
+        "nutzt", "SnAI", "LoRA", "Full", "Finetune",
+    ]
+    assert ms._fragewoerter("Ist das so?") == []
+
+
+def test_frage_findet_beleg_ueber_stoppwortfreie_kaskade():
+    ms.remember("SnAI nutzt LoRA statt eines vollen Finetunes, weil das VRAM spart.",
+                tags="snai", art="entscheidung")
+    ergebnis = ms.frage("Warum nutzt SnAI lieber LoRA als ein volles Finetune?")
+    assert "VRAM spart" in ergebnis, ergebnis
+    assert "gesucht als:" in ergebnis, ergebnis
+
+
+def test_frage_loest_kette_zu_einem_zitat_auf():
+    """Ein Treffer, der nur ein Stueck einer zerschnittenen Notiz ist, muss als
+    EIN zusammenhaengendes Zitat zurueckkommen - sonst bekommt der Aufrufer
+    einen Satz ohne Anfang und weiss nicht einmal, dass mehr da ist."""
+    ms.remember("Turing-Display: Helligkeit wird ueber PWM auf Pin 5 gesteuert",
+                tags="turing35-display", art="schnittstelle")
+    ms.remember("und braucht nach dem Aufwachen aus dem Standby eine kurze Pause,",
+                tags="turing35-display", art="schnittstelle")
+    ms.remember("sonst flackert das Panel beim ersten Bild.",
+                tags="turing35-display", art="schnittstelle")
+    conn = ms._connect()
+    assert ms._ketten_nachtragen(conn) == 3
+    conn.close()
+    ergebnis = ms.frage("Wieso flackert das Display beim Aufwachen aus dem Standby?")
+    assert "#1-#3" in ergebnis, ergebnis
+    assert "PWM auf Pin 5" in ergebnis and "flackert das Panel" in ergebnis, ergebnis
+    assert ergebnis.count("PWM auf Pin 5") == 1, "Kette darf nicht doppelt zitiert werden"
+
+
+def test_frage_gibt_nur_die_spitze_im_volltext():
+    """Alles im Volltext zurueckzugeben kostete gemessen 98 % mehr Zeichen als
+    `recall` + gezieltes `zeige` - es wirft die Vorschau weg, das gemessen
+    beste Stueck des Servers. Die Trefferquote haengt nicht an der Zahl der
+    Volltexte (91/117 bei jedem Wert), nur Zeichen und Runden haengen daran;
+    k=1 ist der einzige Wert, der die Grundlinie auf beiden schlaegt."""
+    # Laenger als die Vorschaubreite von 120 Zeichen, sonst zeigt die Vorschau
+    # den ganzen Eintrag und der Test misst nichts.
+    for n in range(5):
+        ms.remember(f"Panel Nummer {n} flackert beim Aufwachen aus dem Standby. "
+                    + "Das Panel haengt am selben Strang wie die Hintergrund"
+                    "beleuchtung und zieht beim Anlauf kurz die Spannung weg. "
+                    f"SCHLUSSWORT{n}",
+                    tags="turing35-display", art="fallstrick")
+    aus = ms.frage("Warum flackert das Panel?", limit=5)
+    # Nur die Spitze traegt ihr Textende, der Rest ist an der Breite gekappt.
+    # Die Konstante steht bewusst nicht fest im Test - sie ist ein gemessener
+    # Arbeitspunkt und darf sich aendern, ohne dass der Test luegt.
+    volltexte = sum(f"SCHLUSSWORT{n}" in aus for n in range(5))
+    assert volltexte == ms.FRAGE_VOLLTEXT, \
+        f"{volltexte} Volltexte statt {ms.FRAGE_VOLLTEXT}:\n{aus}"
+    assert "weitere als Vorschau" in aus, aus
+    assert 'zeige("' in aus, aus
+    # Und billiger als alles im Volltext muss es sein - das ist der Sinn.
+    assert len(aus) < len(ms.zeige("1,2,3,4,5")), aus
+
+
+def test_frage_zaehlt_zwei_glieder_einer_kette_als_einen_beleg():
+    """Zwei Treffer aus demselben zerschnittenen Memo sind ein Beleg. Sonst
+    fuellt eine einzige Kette die Volltextplaetze und verdraengt den zweiten,
+    unabhaengigen Treffer."""
+    ms.remember("Das Display braucht nach dem Standby eine Pause von 20 ms (z.B",
+                tags="turing35-display", art="fallstrick")
+    ms.remember("gemessen am Pruefstand), sonst flackert das Panel beim ersten Bild.",
+                tags="turing35-display", art="fallstrick")
+    ms.remember("Ein voellig anderer Eintrag ueber das flackernde Panel am Pruefstand.",
+                tags="turing35-display", art="messwert")
+    conn = ms._connect()
+    assert ms._ketten_nachtragen(conn) == 2
+    conn.close()
+    aus = ms.frage("Warum flackert das Panel?", limit=5)
+    # Die Kette #1-#2 als eine Belegstelle, der unabhaengige #3 als zweite.
+    assert "#1-#2" in aus, aus
+    assert aus.count("[fallstrick]") == 1, aus
+    assert "voellig anderer Eintrag" in aus, aus
+
+
+def test_frage_ohne_treffer_nennt_bereinigte_suche():
+    ergebnis = ms.frage("Warum ist der Himmel blau?")
+    assert "Keine Belegstellen" in ergebnis, ergebnis
+    assert "gesucht als: Himmel blau" in ergebnis, ergebnis
+
+
+# --------------------------------------------------------------------------
 # Werkzeuge
 # --------------------------------------------------------------------------
 def test_verdichten_nimmt_untermarken_mit():

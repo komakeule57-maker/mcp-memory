@@ -47,6 +47,45 @@ SPERRFRIST = 30.0
 # 5 Paare schon knapp eine Minute.
 DECKEL_PRUEFE = 5
 
+# Wie viele Treffer `frage` im VOLLTEXT zurueckgibt; der Rest kommt als
+# Vorschau. Ausgemessen 2026-09-21 gegen die 117 echten Fragen mit Gold
+# (messung/stoppwort_probe.py), alle Wege ueber dieselben Faelle.
+#
+# Die Trefferquote haengt NICHT von diesem Wert ab: sie ist bei jedem 91/117,
+# denn gezeigt werden immer alle `limit` Treffer, nur eben teils als Vorschau.
+# Die Wahl ist reines Zeichen-gegen-Runden. Gezaehlt sind beide Kosten je
+# Frage - die Ausgabe von `frage`, und wo das Gold nicht schon im Volltext
+# stand, zusaetzlich das `zeige` der zweiten Runde:
+#
+#   k        Zeichen  ggue. A   Runden   2. Runde noetig
+#   0        603.188    +1 %      234    117/117   (= der alte zweistufige Weg)
+#   1        549.045    -8 %      189     72/117
+#   2        637.812    +7 %      175     58/117
+#   3        719.193   +21 %      165     48/117
+#   4        809.371   +36 %      159     42/117
+#   8      1.177.856   +98 %      143     26/117
+#
+#   Grundlinie A (recall(8) + gezieltes zeige): 595.962 Zeichen, 234 Runden.
+#
+# **k=1 ist der einzige Wert, der die Grundlinie auf BEIDEN Achsen schlaegt**
+# (-8 % Zeichen, -19 % Runden), und gewinnt damit nach der Regel aus
+# MESSKRITERIUM.md. Gegen k=2 gerechnet: der kostet 16 % mehr Zeichen - eine
+# echte Differenz - und spart 7 % Runden, was nach derselben Regel ("ein
+# Unterschied unter 10 % gilt als keiner") keine ist. Jeder weitere Volltext
+# wird teurer und kauft weniger: 6.340 Zeichen je gesparter Runde von 1 auf
+# 2, 8.138 von 2 auf 3, 25.527 von 6 auf 8. Der erste Volltext lohnt, weil
+# die Spitze in 45 von 117 Faellen schon die Antwort ist; der zweite trifft
+# viel seltener und kostet dasselbe.
+#
+# Die Grundlinie ist dabei GESCHMEICHELT: `zeige(gold)` holt genau die Ids,
+# die im Betrieb die Antwort trugen, unterstellt dem zweistufigen Weg also
+# perfekte Voraussicht aus der Vorschau. Der echte Aufrufer raet.
+#
+# ACHTUNG beim Nachmessen: die Kosten der zweiten Runde gehoeren dazu. Ohne
+# sie sah k=2 nach -31 % aus statt nach +7 % - der Wert, der die erste
+# Fassung dieser Zahl in die Irre fuehrte.
+FRAGE_VOLLTEXT = 1
+
 # Ab so vielen eigenen Eintraegen gilt eine Marke als gesetzt und der
 # Markenwaechter schweigt. Eine Warnung, die nur beim allerersten Eintrag
 # kommt, verhindert den Zerfall gerade nicht - der zweite Tippfehler ist der,
@@ -1624,6 +1663,219 @@ def _kaskade(conn, query: str, limit: int, filter_=("", ()), marke: str = ""):
     if neu:
         hinweis += " (+ Stamm-/Wortteiltreffer)"
     return aus[:limit], None, hinweis
+
+
+# --------------------------------------------------------------------------
+# frage(): recall()'s Kaskade fuer ganze Fragen statt Suchbegriffe
+# --------------------------------------------------------------------------
+# Interrogative, Hilfsverben, Artikel, Pronomen, gaengige Praepositionen und
+# Bindewoerter. Kein Anspruch auf Vollstaendigkeit - der Zweck ist, dass die
+# AND-Stufe der Kaskade nicht an "warum", "ist" oder "als" scheitert, nicht
+# eine linguistisch korrekte Stoppwortliste.
+#
+# GEMESSEN 2026-09-21 gegen die Betriebsdaten (messung/stoppwort_probe.py),
+# und das Ergebnis ist eine Warnung an den naechsten Leser: **diese Liste
+# traegt nichts Nachweisbares bei.** Sie greift bei 21 von 265 echten
+# Anfragen (8 %), und auf den 117 Fragen mit Gold aendert sie die
+# Trefferquote um genau null Faelle (5 betroffene, 5/5 vor wie nach). Der
+# Grund ist kein Fehler der Liste: die echten Anfragen sind Stichwortketten
+# ("Aethel Core API Key Umgebungsvariable"), keine Saetze - `recall` hat
+# seine Aufrufer darauf erzogen. Die Liste ist also eine Wette auf den
+# Gebrauch, den `frage` erst ermoeglichen soll, und bleibt drin, weil sie
+# nachweislich nichts kaputt macht: 0 Verluste, keine Marke ist selbst ein
+# Stoppwort, und satzartige Marken bleiben ueber ihre uebrigen Teile
+# auffindbar (9/10 vor wie nach, ein Fall sogar Rang 2 -> 1).
+#
+# 15 dieser Woerter kommen im Bestand in NULL Eintraegen vor (mag, euch,
+# bist, wieso, ...). Das ist kein Argument gegen sie, sondern das staerkste
+# dafuer: ein Wort, das nirgends steht, wuerde die AND-Stufe sicher auf
+# null Treffer zwingen. Wer hier aufraeumen will, raeumt das Harmloseste weg.
+_STOPWORT = frozenset("""
+was wer wen wem wessen wie warum weshalb wieso wozu wodurch wieviel wieviele
+wann wo wohin woher welche welcher welches welchem welchen
+der die das den dem des ein eine einer eines einem einen
+und oder aber doch auch noch schon nur mal denn sondern
+ist sind war waren bin bist seid gewesen sein
+hat haben hatte hatten habe
+wird werden wurde wurden
+kann koennen können konnte konnten
+soll sollen sollte sollten
+muss müssen muessen musste mussten
+darf dürfen duerfen durfte durften
+mag mögen moegen mochte mochten
+ich du er sie es wir ihr man mir mich dir dich ihm ihn ihnen uns euch
+sich mein dein sein unser euer ihre
+nicht kein keine keinen keinem keiner
+von zu für fuer auf im in an bei nach aus über ueber unter durch gegen ohne um mit statt
+als wenn dass ob da so gibt gab
+""".split())
+
+
+def _fragewoerter(frage: str) -> list:
+    """Reduziert eine frei formulierte Frage auf ihre wahrscheinlichen
+    Inhaltswoerter.
+
+    Die Kaskade in `_kaskade` ist auf eine Handvoll Suchbegriffe zugeschnitten,
+    nicht auf einen ganzen Satz: "Warum nutzt SnAI LoRA statt Full-Finetune?"
+    liesse als Term-AND "warum", "nutzt" und "statt" genauso zaehlen wie
+    "SnAI" und "LoRA" - die Stufe faende dann nur Eintraege, die zufaellig
+    auch "warum" enthalten. Ohne Stoppwoerter bleibt, was den Treffer
+    tatsaechlich unterscheidet.
+    """
+    return [
+        w for w in _WORT.findall(frage)
+        if w.lower() not in _STOPWORT and (len(w) > 1 or w.isdigit())
+    ]
+
+
+def _kette_texte(conn: sqlite3.Connection, ids) -> dict:
+    """Loest zerschnittene Memos vollstaendig auf: Kopf-Id, alle Glied-Ids in
+    Reihenfolge, zusammengefuegter Text - je gesuchter Id ein Eintrag.
+
+    Gegenstueck zu `_ketten_von`, das nur den Vermerk liefert ("Stueck 2 von
+    4"). Fuer `frage()` reicht der Vermerk nicht: ein Zitat, das mitten im
+    Satz anfaengt, ist fuer den Aufrufer wertlos, wenn der niemand da ist,
+    der von sich aus die ganze Kette nachliest (siehe CLAUDE.md dazu).
+    Eintraege ohne Kette sind hier der Sonderfall mit genau einem Glied,
+    keine eigene Fallunterscheidung noetig.
+    """
+    ids = list(ids)
+    if not ids:
+        return {}
+    platz = ",".join("?" * len(ids))
+    kopf_von = dict(
+        conn.execute(
+            f"SELECT id, COALESCE(kopf, id) FROM eintrag WHERE id IN ({platz})",
+            tuple(ids),
+        )
+    )
+    koepfe = set(kopf_von.values())
+    platz = ",".join("?" * len(koepfe))
+    glieder = {}
+    for rid, kopf, content in conn.execute(
+        f"SELECT id, COALESCE(kopf, id), content FROM eintrag"
+        f" WHERE COALESCE(kopf, id) IN ({platz})"
+        " ORDER BY COALESCE(kopf, id), COALESCE(nr, 1)",
+        tuple(koepfe),
+    ):
+        glieder.setdefault(kopf, []).append((rid, content))
+    aus = {}
+    for i in ids:
+        kopf = kopf_von[i]
+        teile = glieder[kopf]
+        aus[i] = (kopf, [r for r, _ in teile], "\n\n".join(c for _, c in teile))
+    return aus
+
+
+@server.tool()
+def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
+    """Turns a free-form question into search terms and returns the top hits
+    in full text plus the rest as preview - it does NOT write the answer.
+
+    recall()'s cascade (phrase -> AND -> OR -> stem/compound) is built for a
+    handful of search terms, not a whole sentence: fed a full question, the
+    interrogatives and auxiliaries ("warum", "ist", "hat", ...) sit in the
+    term list and drown out the words that actually distinguish an answer.
+    frage() strips those (see _STOPWORT) before handing the rest to the same
+    cascade - it is recall() with a preprocessing step, not a new search.
+
+    It also resolves cut-up memos on its own: a hit that is one piece of a
+    chain (recall's "[Stueck 2 von 4]" note) is expanded to the whole chain
+    and returned as ONE merged citation, not a fragment starting mid-sentence.
+    Two hits from the same chain count as one citation, not two.
+
+    **Only the top hit comes back in full text** (FRAGE_VOLLTEXT), the rest
+    as recall's preview lines with their ids. Returning everything in full
+    was measured and rejected: it costs 98 % more characters than `recall`
+    plus a targeted `zeige`, because it throws away the preview. At one full
+    hit, the same question is answered with fewer characters AND fewer round
+    trips than the two-step path - the whole frontier is at FRAGE_VOLLTEXT.
+
+    What the stop word list contributes: nothing measurable yet. It fires on
+    8 % of real queries and changes the outcome on none of them, because real
+    queries are keyword chains, not sentences (see _STOPWORT). What pays
+    today is the chain resolution and the full-text-plus-preview shape.
+
+    What it deliberately does NOT do: write a synthesized answer. That is
+    the calling model's job. This project's recall() already leans on that
+    stance (its bilingual-retry note says so explicitly) - and the one place
+    that DOES call a model itself, pruefe()/faktencheck.py, needed its own
+    calibration for a one-word judgement (#1327). Open-ended synthesis is a
+    harder task than that judgement, over a model with a much smaller
+    context window (see faktencheck.py) - not attempted here without that
+    same kind of measurement first.
+
+    Args:
+        frage: A question in plain German (or a handful of keywords - falls
+            back to those verbatim if stripping leaves nothing searchable).
+        marke: Restrict to one project, e.g. "raumschiff-project".
+        art: Restrict to kinds of knowledge, e.g. "fallstrick,entscheidung".
+        limit: Maximum number of hits (default 8, same as recall). The first
+            FRAGE_VOLLTEXT of them come in full text, the rest as preview.
+    """
+    frage = frage.strip()
+    if not frage:
+        return "Fehler: 'frage' ist leer."
+    limit = max(1, min(int(limit), 20))
+    try:
+        filter_ = _filter(art=art, mit_veraltet=False)
+    except ValueError as exc:
+        return f"Fehler: {exc}"
+
+    begriffe = _fragewoerter(frage) or _terme(frage)
+    if not begriffe:
+        return f"Fehler: keine durchsuchbaren Woerter in: {frage}"
+    query = " ".join(begriffe)
+
+    conn = _connect()
+    try:
+        rows, fehler, hinweis = _kaskade(conn, query, limit, filter_, marke)
+        ketten = _kette_texte(conn, [r[0] for r in rows])
+        vermerke = _ketten_von(conn, [r[0] for r in rows])
+    finally:
+        conn.close()
+
+    if fehler:
+        return f"Ungueltige Suchanfrage nach Bereinigung ({query}): {fehler}"
+    in_marke = f" in {marke}" if _marken(marke) else ""
+    if not rows:
+        return f"Keine Belegstellen fuer: {frage}{in_marke} (gesucht als: {query})"
+
+    # Nach Kette entdoppelt: zwei Treffer aus demselben zerschnittenen Memo
+    # sind EIN Beleg, nicht zwei.
+    gesehen, treffer = set(), []
+    for zeile in rows:
+        kopf = ketten.get(zeile[0], (zeile[0],))[0]
+        if kopf not in gesehen:
+            gesehen.add(kopf)
+            treffer.append(zeile)
+
+    belege = []
+    for rid, ts, content, tags, art_ in treffer[:FRAGE_VOLLTEXT]:
+        _kopf, glieder_ids, text = ketten.get(rid, (rid, [rid], content))
+        etikett = f"#{glieder_ids[0]}-#{glieder_ids[-1]}" if len(glieder_ids) > 1 else f"#{rid}"
+        marke_txt = f" ({tags})" if tags else ""
+        belege.append(f"{etikett} [{art_}] {ts[:10]}{marke_txt}\n{text}")
+
+    # Der Rest als Vorschau, mit Kettenvermerk statt zusammengefuegtem Text -
+    # genau die Zeile, die auch `recall` liefert.
+    rest = [
+        _zeile(rid, ts, content, tags, art_, voll=False, vermerk=vermerke.get(rid, ""))
+        for rid, ts, content, tags, art_ in treffer[FRAGE_VOLLTEXT:]
+    ]
+
+    kopf_zeile = (
+        f"{len(belege)} Belegstelle(n) im Volltext zu '{frage}'"
+        f"{in_marke}{hinweis} (gesucht als: {query}):"
+    )
+    aus = kopf_zeile + "\n\n" + "\n\n".join(belege)
+    if rest:
+        weitere = ",".join(str(z[0]) for z in treffer[FRAGE_VOLLTEXT:][:2])
+        aus += (
+            f"\n\n{len(rest)} weitere als Vorschau - Volltext per zeige(\"{weitere}\"):\n"
+            + "\n".join(rest)
+        )
+    return aus
 
 
 @server.tool()

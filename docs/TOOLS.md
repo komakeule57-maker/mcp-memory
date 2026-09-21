@@ -174,6 +174,89 @@ count as syntax — it shows up constantly in German questions.
 On `limit`: 8 is measured. Below that, morphology blending crowds out
 exact hits; above it, mostly the returned payload grows.
 
+## `frage(frage, marke="", art="", limit=6)`
+
+`recall`'s cascade (phrase → all terms → any term → stem/word part) is
+tuned for a handful of search terms, not a full sentence. Feed it a whole
+question and the interrogatives and auxiliaries ("why", "does", "than",
+…) sit in the term list right alongside the words that actually
+distinguish an answer — stage 2's `AND` then demands all of them, or
+stage 3 lets any of them stand in for the real terms. `frage` strips a
+fixed list of German question words, pronouns, articles, prepositions and
+auxiliary verbs first, then hands the rest to the same cascade `recall`
+uses. If stripping leaves nothing searchable (a question made entirely of
+stop words), it falls back to `recall`'s own unfiltered tokenizing rather
+than returning nothing.
+
+It also resolves chain notes on its own. A hit that is one piece of a
+memo cut apart during import (`recall`'s "[Stueck 2 von 4]" note) is
+expanded to the **whole chain** and returned as one merged citation
+instead of a fragment starting mid-sentence — the caller doesn't have to
+notice the note and fetch the rest with `zeige`.
+
+```
+frage("Warum nutzt SnAI lieber LoRA als ein volles Finetune?")
+```
+
+returns full-text citations, each tagged with its id (or id range for a
+resolved chain), kind, date and tags — the same shape as `zeige`'s
+output, just pre-selected and pre-merged for the question asked.
+
+Only the **top hit** comes back in full text; the rest are `recall`'s
+preview lines, with the id to fetch them by. That split is measured, not
+guessed. Against the 117 real questions that carry a gold answer, all
+paths over the same cases, counting **both** costs per question — the
+`frage` output, plus the follow-up `zeige` wherever the answer wasn't in
+the full-text part already:
+
+| full-text hits | hit rate | characters | rounds |
+|---|---|---|---|
+| 0 (= the old two-step path) | 91/117 | 603,188 (+1 %) | 234 |
+| **1 (as built)** | **91/117** | **549,045 (−8 %)** | **189** |
+| 2 | 91/117 | 637,812 (+7 %) | 175 |
+| 3 | 91/117 | 719,193 (+21 %) | 165 |
+| 8 (everything in full) | 91/117 | 1,177,856 (+98 %) | 143 |
+
+Baseline (`recall(8)` + a targeted `zeige`): 595,962 characters, 234
+rounds.
+
+**The hit rate does not depend on this at all** — every hit is shown
+either way, just some as a preview. The choice is purely characters
+against round trips, and one full-text hit is the only value that beats
+the baseline on *both*. Going to two costs 16 % more characters — a real
+difference — to save 7 % of round trips, which under
+[MESSKRITERIUM.md](../messung/MESSKRITERIUM.md)'s "anything under 10 %
+counts as nothing" is not one. Each further full text buys less and costs
+more: 6,340 characters per round saved going from 1 to 2, and 25,527
+going from 6 to 8. The first one is worth it because the top hit already
+*is* the answer in 45 of 117 cases; the second hits far more rarely for
+the same price.
+
+The baseline is *flattered*, too: `zeige(gold)` fetches exactly the ids
+that answered in production, granting the two-step path perfect
+foresight. And when re-measuring, the second round's characters have to
+be counted — leaving them out made two full texts look like −31 % instead
+of +7 %.
+
+**What the stop word list contributes: nothing measurable yet.** It fires
+on 21 of 265 real queries (8 %) and changes the outcome on none of them,
+because real queries are keyword chains ("Aethel Core API Key
+Umgebungsvariable"), not sentences — `recall` trained its callers that
+way. It is kept as a bet on the usage `frage` is meant to enable, because
+it demonstrably breaks nothing: no tag is itself a stop word, and
+sentence-like tags stay findable through their remaining parts (9/10
+either way). Showing the *gain* would take invented questions, which
+MESSKRITERIUM.md rules out.
+
+**What it deliberately does not do: write an answer.** Synthesizing one
+from several citations is a harder job than the single-word judgment
+`pruefe` asks of a language model, over a much smaller context window —
+and that judgment already needed its own measurement before it could be
+trusted (see [MEASUREMENTS.md](MEASUREMENTS.md)). `frage` leaves the
+synthesis to whichever model is calling it, the same stance `recall`
+already takes for retrying a query in another language: the caller has a
+language model, the tool doesn't need one of its own.
+
 ## `themen(marke="", limit=40)`
 
 Counterpart to `recall`: that searches for words, this **browses**.
