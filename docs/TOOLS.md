@@ -3,6 +3,40 @@
 Reference for all eight MCP tools. The fact check behind `pruefe` has its
 own page: [FACTCHECK.md](FACTCHECK.md).
 
+## Across `recall`, `frage` and `zeige`: the feedback loop
+
+These three tools share one piece of state. When a search is followed by a
+`zeige`, the server stores the pair — the **wording that was searched for**
+and the **entry that was then fetched**. Ask the same thing again and those
+entries come first, and the header says so: `(+ schon einmal so gesucht)`.
+
+Four things about it are deliberate, and each one was measured before it was
+built (`messung/RUECKKOPPLUNG.md`):
+
+- **It fires on word-for-word repeats only.** The key is the sorted set of
+  search terms, so word order and case don't matter, but a *similar*
+  question inherits nothing. Fuzzy lookup was measured and was worse: it
+  pushes sibling questions out of rank 1 while gaining nothing.
+- **It records every search→fetch pair**, not just the ones where the search
+  visibly failed. That is where the gain comes from — such pairs work
+  *against* the decay that comes with a growing dataset, because they grow
+  with it.
+- **A pair needs a shared content word.** If the fetched entry contains no
+  word of at least four letters from the question, it was a change of
+  subject, not an answer, and nothing is stored. Without this guard the loop
+  collects exactly the poison it cannot tolerate.
+- **Boosted hits pass the same filters as any other.** A superseded entry,
+  or one excluded by `art=` or `marke=`, stays out.
+
+`RUECKKOPPLUNG = False` in `memory_server.py` is the kill switch; it stops
+both firing and collecting. Measured tolerance: the loop survives about 10 %
+wrong pairs and is worse than no loop at 25 %, so if `nachfrage` is ever
+suspected of being polluted, flip the switch and clean the table rather than
+blaming the ranking.
+
+A `zeige` with no search before it stores nothing — whoever already knows
+the id was not answering a question.
+
 ## `remember(text, tags="", art="", ersetzt="")`
 
 Creates an entry with the current timestamp and returns its **id**.

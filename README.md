@@ -43,6 +43,10 @@ contradictions surface instead of quietly piling up.
   lines for when you have forgotten the words to search for.
 - **Opt-in second opinion** — optionally ask any OpenAI-compatible model
   whether two entries contradict each other or just supersede one another.
+- **It learns from its own failures** — when a search is followed by
+  fetching an entry, that pair is remembered. Ask the same thing again and
+  the entry that answered last time comes first. Word-for-word repeats
+  only, and the header says when it fired.
 
 ## Requirements
 
@@ -115,6 +119,10 @@ installation, not a benchmark:
 - **82.3 % Recall@10** against the public LoCoMo dataset, untuned, first
   run, at 2 ms and 2.7 KB per query.
 - **73 % smaller returns** from the preview, with a calculable worst case.
+- **−23 % expected characters per question** from the feedback loop, at
+  84 % vs. 73 % first-round hit rate, measured over 164 questions from 30
+  real sessions in a time-ordered replay — a pair only ever helps *later*
+  questions, never itself. 19 questions gained, none lost.
 - **53 % → 64 %** hit rate on 47 real reformulation chains from a one-line
   ranking fix — found by measuring where real search sessions had failed,
   not by guessing. On today's dataset the same fix also *costs* 3 of the 117

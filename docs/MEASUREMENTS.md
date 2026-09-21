@@ -67,6 +67,51 @@ a measurement *per query inside* `recall` showed that the expensive
 queries were the probe's, not the search's.
 
 
+### The Feedback Loop
+
+Test bench: **164 questions with a known answer**, drawn from 1,013 real
+tool calls across 30 sessions. 117 of them worked on the first try in
+production (the answer is whatever `zeige` fetched right after); 47 did not
+and were rephrased (the answer is what the chain ended up fetching, so it
+does not come from the search itself and cannot be circular).
+
+The replay is **time-ordered** — sessions by their first timestamp, calls by
+line number — and a pair is stored only *after* the question it comes from
+has been scored. A pair can therefore only ever help a later question.
+
+Four mechanisms, the 2×2 of what is stored against how it is looked up,
+plus the baseline:
+
+| Arm | Hit rate | Expected chars | Fired | Misfired | Gained | Lost |
+|---|---|---|---|---|---|---|
+| A: today | 73 % | 3,218 | – | – | – | – |
+| B1 narrow / exact | 77 % | 2,895 | 21 | 0 | 8 | 0 |
+| B2 narrow / fuzzy | 77 % | 2,934 | 40 | 8 | 8 | 1 |
+| B3 broad / fuzzy | 82 % | 2,565 | 100 | 19 | 21 | 5 |
+| **B4 broad / exact** | **84 %** | **2,450** | 68 | **0** | 19 | **0** |
+
+"Expected chars" is first-round output plus the probability of failing times
+6,592 characters — the measured median cost of a rescue chain. It matters
+because 55 % of the total cost of a search sits in the failures, not in the
+payload.
+
+Re-run against the **built** server rather than the simulation, replaying
+the same stream end to end: 84 %, −23 %, 19 gained, 0 lost — the build
+reproduces the bench.
+
+**Poisoning.** With artificially wrong pairs injected at rate p, B4 survives
+p = 10 % (−23 %, one loss), is barely ahead at 25 % and behind the baseline
+at 50 %. The fuzzy arm breaks at 25 % already. The *real* poison arm — the
+five chains the harvester rejects as changes of subject, fed in anyway —
+moves nothing on any arm, but with 5 pairs out of 169 it is far too small to
+show damage. That is reported as an underpowered measurement, not as an
+acquittal of the relevance guard.
+
+**What this cannot show:** whether the loop helps questions that were never
+asked. The bench only knows the 265 real queries, and inventing questions is
+ruled out — they would be invented by the same system that is being
+measured.
+
 ## Limitations
 
 - **`grep` beats it at compounds** (57/60 vs. 31/60). That's not a defect,

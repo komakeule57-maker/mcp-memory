@@ -297,6 +297,73 @@ readers included, and eventually throws `database is locked`. Measured
 sticks to the file.
 
 
+## The Feedback Loop: Vocabulary, Not Ranking
+
+Every ranking idea this project tried came to nothing. Sorting by term
+coverage instead of BM25 *lowered* the hit rate; filling free slots with an
+OR pass gained zero; relaxing the AND stage term by term gained 2 cases out
+of 164. Three independent attempts, three duds — and that pattern is the
+finding, not the failures.
+
+The reason showed up in the sessions themselves. Where a real search failed
+and the caller rephrased, the rescuing question was classified against the
+failed one: **68 % swapped vocabulary, 30 % shared no word at all, 2 %
+merely added a word, and 0 % were just shorter.** The entry that answers
+"threepvoid backstory" is filed under "VOID SHAFT lore" — no reordering of
+the same words reaches it, because the words are not in it. Ranking was the
+wrong half of the problem.
+
+What *is* reachable: **53 % of real queries are questions asked more than
+once.** So the server stores what the previous round already discovered —
+the wording that was searched for, and the entry that was fetched right
+after. That pair is free; it falls out of normal operation, and it comes
+from the caller's own judgement rather than from the search being graded by
+itself.
+
+Measured in a time-ordered replay of 164 questions from 30 sessions, where a
+pair can only ever help a *later* question: expected characters per question
+**−23 %**, first-round hit rate **73 % → 84 %**, 19 questions gained, none
+lost. See [MEASUREMENTS.md](MEASUREMENTS.md) and `messung/RUECKKOPPLUNG.md`.
+
+### The Two Axes Pull in Opposite Directions
+
+Building it meant choosing on two axes, and the measurement separated them:
+
+| | What is stored | How it is looked up |
+|---|---|---|
+| narrow | only failed reformulation chains | word-for-word |
+| broad | every search→fetch pair | fuzzy (full-text over stored questions) |
+
+**Broad storage carries the gain.** Questions that used to work and no
+longer do are the largest group rescued — the loop counteracts the decay a
+growing dataset causes, because it grows along with it.
+
+**Fuzzy lookup only costs.** It fires more often, misfires 19 times where
+word-for-word misfires never, and loses five questions — three of them the
+same family of sibling questions ("Flüstern im Eis …"), where a neighbour's
+ids displace the right entry from rank 1. The damage lands where the search
+is already at its best.
+
+So the rule is: **be greedy about collecting, cautious about firing.** That
+was the opposite of the expectation going in, where the narrow, better
+evidenced pairs looked like the safe start.
+
+### What Keeps It From Rotting
+
+The loop tolerates roughly 10 % wrong pairs and is worse than no loop at
+25 %. Three guards, in order of how much they carry:
+
+1. **Word-for-word firing.** A wrong pair can only damage the exact question
+   that produced it, not a neighbourhood of questions.
+2. **A shared content word** between question and entry, or nothing is
+   stored. A `zeige` that merely looks something else up after a search is a
+   change of subject, not an answer.
+3. **Visibility.** The header says `(+ schon einmal so gesucht)` when the
+   loop fired. A ranking that depends on earlier sessions is otherwise
+   impossible to reason about, and a wrong pair would never surface.
+
+`RUECKKOPPLUNG = False` switches off both firing and collecting.
+
 ## What's Deliberately NOT in the Code
 
 **"Is this worth remembering?"** is not scored automatically. Two cheap

@@ -834,6 +834,107 @@ def test_kein_lebendes_skript_liest_die_tabellen_vor_stand_5():
     )
 
 
+# --------------------------------------------------------------------------
+# Rueckkopplung
+# --------------------------------------------------------------------------
+def _lerne(frage: str, ids: str) -> None:
+    """Was im Betrieb geschieht: suchen, dann das Richtige holen."""
+    ms.recall(frage)
+    ms.zeige(ids)
+
+
+def _raenge(ausgabe: str) -> list:
+    """Ids NUR aus den Kopfzeilen der Treffer (#1899)."""
+    return re.findall(r"^#(\d+) ", ausgabe, re.M)
+
+
+def test_rueckkopplung_hebt_die_wiederholte_frage_nach_vorn():
+    """#1917: wortgleich wiederholte Fragen meinen im Betrieb denselben
+    Eintrag - 46 von 46 gemessen. Genau darauf ruht der Mechanismus."""
+    ms.remember("Sensor Sensor Sensor am Mast, dreifach erwaehnt", tags="schiff",
+                art="schnittstelle")
+    ms.remember("Die Kalibrierung des Sensors laeuft ueber die Werkbank",
+                tags="schiff", art="fallstrick")
+    vorher = _raenge(ms.recall("Sensor Kalibrierung"))
+    ziel = vorher[-1]
+    assert len(vorher) > 1 and vorher[0] != ziel, vorher
+
+    _lerne("Sensor Kalibrierung", ziel)
+
+    nachher = ms.recall("Sensor Kalibrierung")
+    assert _raenge(nachher)[0] == ziel, nachher
+    assert "schon einmal so gesucht" in nachher, nachher
+
+
+def test_rueckkopplung_feuert_nur_bei_wortgleichheit():
+    """#1918: unscharfes Nachschlagen verdraengte Geschwisterfragen von Rang 1.
+    Eine aehnliche, aber nicht wortgleiche Frage darf nichts erben."""
+    ms.remember("Flackern im Eis, Kapitel zur Moeblierung", tags="eis",
+                art="entscheidung")
+    ms.remember("Flackern im Eis, Kapitel zur Werkstatt", tags="eis",
+                art="entscheidung")
+    _lerne("Flackern Eis Moeblierung", "1")
+
+    geschwister = ms.recall("Flackern Eis Werkstatt")
+    assert "schon einmal so gesucht" not in geschwister, geschwister
+    # Dieselbe Frage in anderer Reihenfolge ist dagegen dieselbe Frage.
+    gedreht = ms.recall("Moeblierung Eis Flackern")
+    assert "schon einmal so gesucht" in gedreht, gedreht
+
+
+def test_rueckkopplung_achtet_die_filter_des_aufrufers():
+    """Ein durch art= oder marke= ausgeschlossener Eintrag darf auch ueber die
+    Rueckkopplung nicht hereinkommen - sonst umgeht sie die Einschraenkung."""
+    ms.remember("Der Rumpf traegt die Antenne", tags="schiff", art="schnittstelle")
+    ms.remember("Der Rumpf rostet an der Naht", tags="werft", art="fallstrick")
+    _lerne("Rumpf Antenne", "1")
+
+    assert "schon einmal so gesucht" in ms.recall("Rumpf Antenne")
+    assert "1" not in _raenge(ms.recall("Rumpf Antenne", art="fallstrick"))
+    assert "1" not in _raenge(ms.recall("Rumpf Antenne", marke="werft"))
+    # Die eigene Marke trifft weiterhin.
+    assert "1" in _raenge(ms.recall("Rumpf Antenne", marke="schiff"))
+
+
+def test_rueckkopplung_zeigt_keinen_veralteten_eintrag():
+    """Abgeloest ist abgeloest - auch fuer ein gemerktes Paar."""
+    ms.remember("Der Kompass weicht um zwei Strich ab", tags="schiff", art="messwert")
+    _lerne("Kompass Abweichung Strich", "1")
+    assert "1" in _raenge(ms.recall("Kompass Abweichung Strich"))
+    ms.vergessen("1", grund="nachgemessen")
+    assert "1" not in _raenge(ms.recall("Kompass Abweichung Strich"))
+
+
+def test_rueckkopplung_verwirft_den_themenwechsel():
+    """Die Relevanzprobe aus zielsicher.py: ein `zeige`, das nach der Suche
+    etwas ganz anderes nachschlaegt, ist kein Paar. Ohne sie sammelt der
+    Mechanismus genau das Gift ein, das er nicht vertraegt (#1917)."""
+    ms.remember("Die Ankerwinde klemmt bei Frost", tags="schiff", art="fallstrick")
+    ms.remember("Der Proviant reicht vier Wochen", tags="schiff", art="messwert")
+    ms.recall("Ankerwinde Frost")
+    ms.zeige("2")          # etwas voellig anderes nachgeschlagen
+    assert "schon einmal so gesucht" not in ms.recall("Ankerwinde Frost")
+
+
+def test_zeige_ohne_vorherige_suche_merkt_nichts():
+    """Wer die Id schon kennt, beantwortet damit keine Frage."""
+    ms.remember("Das Ruderblatt sitzt fest", tags="schiff", art="fallstrick")
+    ms.zeige("1")
+    conn = ms._connect()
+    try:
+        assert conn.execute("SELECT count(*) FROM nachfrage").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_rueckkopplung_laesst_explizite_syntax_in_ruhe():
+    """Wer FTS5-Syntax schreibt, bekommt genau die - wie bei der Kaskade."""
+    ms.remember("Der Kessel steht unter Druck", tags="schiff", art="fallstrick")
+    ms.recall("Kessel Druck")
+    ms.zeige("1")
+    assert "schon einmal so gesucht" not in ms.recall("Kessel AND Druck")
+
+
 def main() -> int:
     faelle = [(n, f) for n, f in sorted(globals().items())
               if n.startswith("test_") and callable(f)]
@@ -844,6 +945,9 @@ def main() -> int:
         ordner = Path(tempfile.mkdtemp(prefix="memtest-"))
         ms.DB_PATH = ordner / "memory.db"
         ms._schema_geprueft = None
+        # Die offenen Fragen haengen am Prozess, nicht an der Datenbank - ohne
+        # dieses Zuruecksetzen traegt ein Test die Suche des vorigen weiter.
+        del ms._OFFENE_FRAGEN[:]
         assert ms.DB_PATH != ECHTE_DB, "Testlauf zeigt auf den echten Bestand - abgebrochen"
         try:
             fall()

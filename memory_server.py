@@ -86,6 +86,27 @@ DECKEL_PRUEFE = 5
 # Fassung dieser Zahl in die Irre fuehrte.
 FRAGE_VOLLTEXT = 1
 
+# Rueckkopplung: wonach im Betrieb vergeblich gesucht wurde, wird am Eintrag
+# suchbar, der die Frage am Ende beantwortet hat. Gemessen an 164 Faellen aus
+# 30 Sitzungen in einem zeitgeordneten Durchlauf (#1917): erwartete Zeichen je
+# Frage -24 %, 19 Fragen gewonnen, KEINE verloren. Zwei Achsen wurden dabei
+# getrennt gemessen, und nur eine davon traegt:
+#   * WAS gemerkt wird - jedes recall->zeige-Paar, nicht nur die gescheiterten.
+#     Das ist der Gewinn: es wirkt gegen den Verfall aus #1904, weil es mit dem
+#     Bestand mitwaechst statt gegen ihn.
+#   * WIE nachgeschlagen wird - nur bei WORTGLEICHER Wiederholung. Unscharfes
+#     Nachschlagen war gemessen schlechter: es verdraengt Geschwisterfragen
+#     von Rang 1 (#1918). Vorsicht gehoert ins Zuenden, nicht ins Sammeln.
+# Wie viele Anlaeufe vor einem `zeige` noch als eine Kette gelten. Danach ist
+# es keine Umformulierung mehr, sondern eine neue Sitzungsabsicht.
+DECKEL_OFFEN = 8
+
+# Notschalter. Die Vergiftungskurve (#1917) sagt: der Mechanismus vertraegt
+# rund ein Zehntel falscher Paare, bei einem Viertel ist er schlechter als
+# gar keiner. Wer den Verdacht hat, dass der Speicher verdorben ist, stellt
+# das hier ab und raeumt `nachfrage` auf, statt die Suche zu beschuldigen.
+RUECKKOPPLUNG = True
+
 # Ab so vielen eigenen Eintraegen gilt eine Marke als gesetzt und der
 # Markenwaechter schweigt. Eine Warnung, die nur beim allerersten Eintrag
 # kommt, verhindert den Zerfall gerade nicht - der zweite Tippfehler ist der,
@@ -298,6 +319,18 @@ def _nebentabellen(conn: sqlite3.Connection) -> None:
     # (#1426) - eine neue Art ist so ein INSERT, und der Fremdschluessel auf
     # `eintrag.art` haelt trotzdem jeden Tippfehler ab.
     conn.execute("CREATE TABLE IF NOT EXISTS art_vokabular (art TEXT PRIMARY KEY)")
+    # Die Rueckkopplung: ein Wortlaut, unter dem gesucht wurde, und der
+    # Eintrag, der danach geholt wurde. Der Schluessel ist die SORTIERTE
+    # Begriffsmenge - "Deck 5 threepvoid" und "threepvoid deck 5" sind
+    # dieselbe Frage. Der Wortlaut steht trotzdem dabei, sonst ist spaeter
+    # nicht nachzusehen, was der Schluessel einmal war.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS nachfrage ("
+        " schluessel TEXT NOT NULL,"
+        " id INTEGER NOT NULL REFERENCES eintrag(id) ON DELETE CASCADE,"
+        " frage TEXT NOT NULL, seit TEXT NOT NULL,"
+        " PRIMARY KEY (schluessel, id)) WITHOUT ROWID"
+    )
     # Erst lesen, dann nur das Fehlende schreiben. Ein `INSERT OR IGNORE` je
     # Verbindung sieht harmlos aus, ist aber eine SCHREIBtransaktion bei jedem
     # Werkzeugaufruf - unter WAL ein fsync, gemessen 2,4 -> 7,8 ms je recall.
@@ -1502,6 +1535,7 @@ def recall(
     except ValueError as exc:
         return f"Fehler: {exc}"
 
+    _frage_vormerken(query)
     conn = _connect()
     try:
         rows, fehler, hinweis = _kaskade(conn, query, limit, filter_, marke)
@@ -1582,7 +1616,153 @@ def _stumm_zaehlen(conn, query: str, mit_veraltet: bool, marke: str = "") -> int
         return 0
 
 
+# --------------------------------------------------------------------------
+# Rueckkopplung: wonach vergeblich gesucht wurde, findet beim naechsten Mal
+# --------------------------------------------------------------------------
+# Der Zustand haengt am PROZESS, nicht an der Datenbank: welche Fragen seit dem
+# letzten `zeige` offen sind, ist eine Eigenschaft der laufenden Sitzung. Ein
+# stdio-MCP-Server bedient genau einen Aufrufer, also ist das hier richtig -
+# wer ihn je ueber ein Netz fuer mehrere oeffnet, muss diese Liste je
+# Verbindung fuehren, sonst verbindet er die Frage des einen mit dem `zeige`
+# des anderen.
+_OFFENE_FRAGEN: list = []
+
+# Wie die Relevanzprobe in `messung/zielsicher.py`: ein Eintrag zaehlt nur dann
+# als Antwort auf eine Frage, wenn er mindestens EIN Inhaltswort davon
+# enthaelt. Ohne diese Probe sammelt die Rueckkopplung auch Themenwechsel ein -
+# ein `zeige`, das nach der Frage nur noch etwas anderes nachschlaegt.
+_FUELLWORT = set("""der die das und oder in im von zu fuer für mit auf ist sind wie was
+warum wo wer den dem des ein eine einen bei aus nach vor als auch nur noch""".split())
+_INHALTSWORT = re.compile(r"[\wÄÖÜäöüß]{4,}", re.UNICODE)
+
+
+def _inhaltswoerter(frage: str) -> set:
+    return {w for w in _INHALTSWORT.findall(frage.lower()) if w not in _FUELLWORT}
+
+
+def _frageschluessel(frage: str) -> str:
+    """Wortgleichheit ohne Ruecksicht auf Reihenfolge und Schreibung."""
+    return " ".join(sorted(t.lower() for t in _terme(frage)))
+
+
+def _frage_vormerken(query: str) -> None:
+    """Jede Suche kommt auf den Stapel - erst ein `zeige` macht ein Paar daraus."""
+    if query and not _ist_explizite_syntax(query):
+        _OFFENE_FRAGEN.append(query)
+        del _OFFENE_FRAGEN[:-DECKEL_OFFEN]
+
+
+def _marke_trifft(tags: str, gewollt: list) -> bool:
+    """Was `_marken_klausel` in FTS5 tut, hier fuer eine einzelne Zeile.
+
+    Die Marke wird als PHRASE gesucht, der Tokenisierer trennt am Bindestrich:
+    `leuchtturm` trifft `leuchtturm-project`, `mcp-memory-server` aber nicht
+    `mcp-memory`. Nachgebildet als Teilfolge der Tokenliste - eine Gleichheit
+    auf dem ganzen Feld waere strenger als die Suche und wuerde die
+    Rueckkopplung unter `marke=` heimlich stummschalten.
+    """
+    folge = [w.lower() for w in _WORT.findall(tags or "")]
+    for m in gewollt:
+        teil = [w.lower() for w in _WORT.findall(m)]
+        if teil and any(
+            folge[i : i + len(teil)] == teil for i in range(len(folge) - len(teil) + 1)
+        ):
+            return True
+    return False
+
+
+def _rueckkopplung_merken(conn, gefunden: dict) -> int:
+    """Verbindet die Fragen seit dem letzten `zeige` mit den geholten Eintraegen.
+
+    Gemerkt wird JEDE Frage seit dem letzten `zeige`, nicht nur die erste einer
+    Umformulierungskette. Auch das ist gemessen und nicht angenommen: die
+    Fassung mit allen Gliedern traf im Durchlauf genau so gut wie die mit nur
+    der ersten (138/164 beide), bei 225 statt 164 Paaren. Die einfachere Regel
+    kostet also nichts.
+    """
+    offen = list(_OFFENE_FRAGEN)
+    del _OFFENE_FRAGEN[:]
+    # Der Notschalter haelt auch das Sammeln an, nicht nur das Zuenden: wer ihn
+    # umlegt, hat den Verdacht, dass der Speicher verdirbt - dann weiter zu
+    # sammeln waere genau das Falsche.
+    if not RUECKKOPPLUNG or not offen or not gefunden:
+        return 0
+    neu = []
+    for wortlaut in offen:
+        schluessel = _frageschluessel(wortlaut)
+        woerter = _inhaltswoerter(wortlaut)
+        if not schluessel or not woerter:
+            continue
+        for rid, zeile in gefunden.items():
+            heu = (zeile[2] + " " + (zeile[3] or "")).lower()
+            if any(w in heu for w in woerter):
+                neu.append((schluessel, rid, wortlaut))
+    if neu:
+        conn.executemany(
+            "INSERT OR IGNORE INTO nachfrage (schluessel, id, frage, seit)"
+            " VALUES (?, ?, ?, datetime('now'))",
+            neu,
+        )
+        conn.commit()
+    return len(neu)
+
+
+def _rueckkopplung_zeilen(conn, query: str, limit: int, filter_, marke: str) -> list:
+    """Die Eintraege, die auf genau diese Frage schon einmal geantwortet haben.
+
+    Sie gehen durch dieselben Filter wie jeder andere Treffer - ein veralteter
+    oder durch `art=` ausgeschlossener Eintrag darf auch hier nicht auftauchen,
+    sonst umginge die Rueckkopplung die Einschraenkung des Aufrufers.
+    """
+    schluessel = _frageschluessel(query)
+    if not schluessel:
+        return []
+    ids = [
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM nachfrage WHERE schluessel = ? ORDER BY seit, id",
+            (schluessel,),
+        )
+    ]
+    if not ids:
+        return []
+    wo, args = filter_
+    platz = ",".join("?" * len(ids))
+    rang = {i: n for n, i in enumerate(ids)}
+    zeilen = conn.execute(
+        "SELECT e.id, e.ts, e.content, e.tags, e.art FROM eintrag e"
+        f" WHERE e.id IN ({platz}){wo}",
+        (*ids, *args),
+    ).fetchall()
+    gewollt = _marken(marke)
+    if gewollt:
+        zeilen = [z for z in zeilen if _marke_trifft(z[3], gewollt)]
+    zeilen.sort(key=lambda z: rang[z[0]])
+    return zeilen[:limit]
+
+
 def _kaskade(conn, query: str, limit: int, filter_=("", ()), marke: str = ""):
+    """Die Kaskade, und davor die Rueckkopplung.
+
+    Wer selbst FTS5-Syntax schreibt, bekommt genau die - dort feuert die
+    Rueckkopplung nicht, aus demselben Grund, aus dem die Kaskade dort ihre
+    Stufen nicht aufspannt.
+    """
+    rows, fehler, hinweis = _kaskade_roh(conn, query, limit, filter_, marke)
+    if not RUECKKOPPLUNG or fehler or _ist_explizite_syntax(query):
+        return rows, fehler, hinweis
+    vorn = _rueckkopplung_zeilen(conn, query, limit, filter_, marke)
+    if not vorn:
+        return rows, fehler, hinweis
+    # Sichtbar machen, nicht heimlich umsortieren: eine Rangfolge, die von
+    # frueheren Sitzungen abhaengt, ist sonst nicht nachzuvollziehen - und
+    # ein falsch gemerktes Paar faellt nie auf.
+    gesehen = {z[0] for z in vorn}
+    rows = vorn + [r for r in rows if r[0] not in gesehen]
+    return rows[:limit], None, hinweis + " (+ schon einmal so gesucht)"
+
+
+def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()), marke: str = ""):
     """Stufen von genau nach grosszuegig.
 
     1. die Wortfolge als Phrase - setzt sich vor Stufe 2, verdraengt sie nicht
@@ -1774,6 +1954,7 @@ def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
     except ValueError as exc:
         return f"Fehler: {exc}"
 
+    _frage_vormerken(frage)
     conn = _connect()
     try:
         rows, fehler, hinweis = _kaskade(conn, frage, limit, filter_, marke)
@@ -1952,6 +2133,10 @@ def zeige(ids: str) -> str:
         arten = {i: z[4] for i, z in gefunden.items()}
         ketten = _ketten_von(conn, gefunden)
         status = _veraltungen(conn)
+        # Hier schliesst sich das Paar: was gesucht wurde, und was daraufhin
+        # geholt wurde. Ein `zeige` ohne vorangegangene Suche merkt nichts -
+        # dann hat der Aufrufer die Id schon gekannt.
+        _rueckkopplung_merken(conn, gefunden)
     finally:
         conn.close()
 
