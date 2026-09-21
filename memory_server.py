@@ -1666,66 +1666,22 @@ def _kaskade(conn, query: str, limit: int, filter_=("", ()), marke: str = ""):
 
 
 # --------------------------------------------------------------------------
-# frage(): recall()'s Kaskade fuer ganze Fragen statt Suchbegriffe
+# frage(): ein Treffer im Volltext, der Rest als Vorschau
 # --------------------------------------------------------------------------
-# Interrogative, Hilfsverben, Artikel, Pronomen, gaengige Praepositionen und
-# Bindewoerter. Kein Anspruch auf Vollstaendigkeit - der Zweck ist, dass die
-# AND-Stufe der Kaskade nicht an "warum", "ist" oder "als" scheitert, nicht
-# eine linguistisch korrekte Stoppwortliste.
+# Hier stand bis 2026-09-21 eine deutsche Stoppwortliste, die eine ganze Frage
+# auf ihre Inhaltswoerter kuerzen sollte, bevor `_kaskade` sie sah. Sie ist
+# ausgebaut, weil zweimal gemessen wurde, dass sie nichts tut: auf den 117
+# echten Fragen mit Gold aenderte sie die Trefferquote um null Faelle (sie
+# griff bei 5 davon), auf den 47 gescheiterten Umformulierungen ebenfalls um
+# null (sie griff bei 8). Der Grund ist kein Fehler der Liste - die echten
+# Anfragen sind Stichwortketten ("Aethel Core API Key Umgebungsvariable"),
+# keine Saetze, weil `recall` seine Aufrufer darauf erzogen hat.
 #
-# GEMESSEN 2026-09-21 gegen die Betriebsdaten (messung/stoppwort_probe.py),
-# und das Ergebnis ist eine Warnung an den naechsten Leser: **diese Liste
-# traegt nichts Nachweisbares bei.** Sie greift bei 21 von 265 echten
-# Anfragen (8 %), und auf den 117 Fragen mit Gold aendert sie die
-# Trefferquote um genau null Faelle (5 betroffene, 5/5 vor wie nach). Der
-# Grund ist kein Fehler der Liste: die echten Anfragen sind Stichwortketten
-# ("Aethel Core API Key Umgebungsvariable"), keine Saetze - `recall` hat
-# seine Aufrufer darauf erzogen. Die Liste ist also eine Wette auf den
-# Gebrauch, den `frage` erst ermoeglichen soll, und bleibt drin, weil sie
-# nachweislich nichts kaputt macht: 0 Verluste, keine Marke ist selbst ein
-# Stoppwort, und satzartige Marken bleiben ueber ihre uebrigen Teile
-# auffindbar (9/10 vor wie nach, ein Fall sogar Rang 2 -> 1).
-#
-# 15 dieser Woerter kommen im Bestand in NULL Eintraegen vor (mag, euch,
-# bist, wieso, ...). Das ist kein Argument gegen sie, sondern das staerkste
-# dafuer: ein Wort, das nirgends steht, wuerde die AND-Stufe sicher auf
-# null Treffer zwingen. Wer hier aufraeumen will, raeumt das Harmloseste weg.
-_STOPWORT = frozenset("""
-was wer wen wem wessen wie warum weshalb wieso wozu wodurch wieviel wieviele
-wann wo wohin woher welche welcher welches welchem welchen
-der die das den dem des ein eine einer eines einem einen
-und oder aber doch auch noch schon nur mal denn sondern
-ist sind war waren bin bist seid gewesen sein
-hat haben hatte hatten habe
-wird werden wurde wurden
-kann koennen können konnte konnten
-soll sollen sollte sollten
-muss müssen muessen musste mussten
-darf dürfen duerfen durfte durften
-mag mögen moegen mochte mochten
-ich du er sie es wir ihr man mir mich dir dich ihm ihn ihnen uns euch
-sich mein dein sein unser euer ihre
-nicht kein keine keinen keinem keiner
-von zu für fuer auf im in an bei nach aus über ueber unter durch gegen ohne um mit statt
-als wenn dass ob da so gibt gab
-""".split())
-
-
-def _fragewoerter(frage: str) -> list:
-    """Reduziert eine frei formulierte Frage auf ihre wahrscheinlichen
-    Inhaltswoerter.
-
-    Die Kaskade in `_kaskade` ist auf eine Handvoll Suchbegriffe zugeschnitten,
-    nicht auf einen ganzen Satz: "Warum nutzt SnAI LoRA statt Full-Finetune?"
-    liesse als Term-AND "warum", "nutzt" und "statt" genauso zaehlen wie
-    "SnAI" und "LoRA" - die Stufe faende dann nur Eintraege, die zufaellig
-    auch "warum" enthalten. Ohne Stoppwoerter bleibt, was den Treffer
-    tatsaechlich unterscheidet.
-    """
-    return [
-        w for w in _WORT.findall(frage)
-        if w.lower() not in _STOPWORT and (len(w) > 1 or w.isdigit())
-    ]
+# Wer sie wieder einbauen will, misst zuerst, ob inzwischen ueberhaupt
+# Fragesaetze gestellt werden (`messung/ernte.py`, dann der Anteil der
+# Anfragen mit Stoppwoertern). Ohne diesen Nachweis ist sie toter Ballast:
+# Code, den niemand pflegt, der aber bei jeder Aenderung mitgedacht werden
+# muss. Was `frage` traegt, ist die Kettenaufloesung und die Rueckgabeform.
 
 
 def _kette_texte(conn: sqlite3.Connection, ids) -> dict:
@@ -1769,19 +1725,15 @@ def _kette_texte(conn: sqlite3.Connection, ids) -> dict:
 
 @server.tool()
 def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
-    """Turns a free-form question into search terms and returns the top hits
-    in full text plus the rest as preview - it does NOT write the answer.
+    """Answers a question from the dataset: top hit in full text, the rest as
+    preview - it does NOT write the answer itself.
 
-    recall()'s cascade (phrase -> AND -> OR -> stem/compound) is built for a
-    handful of search terms, not a whole sentence: fed a full question, the
-    interrogatives and auxiliaries ("warum", "ist", "hat", ...) sit in the
-    term list and drown out the words that actually distinguish an answer.
-    frage() strips those (see _STOPWORT) before handing the rest to the same
-    cascade - it is recall() with a preprocessing step, not a new search.
+    Same search as recall(), same cascade, same filters. What differs is the
+    shape of what comes back, and that is the whole point of the tool.
 
-    It also resolves cut-up memos on its own: a hit that is one piece of a
-    chain (recall's "[Stueck 2 von 4]" note) is expanded to the whole chain
-    and returned as ONE merged citation, not a fragment starting mid-sentence.
+    It resolves cut-up memos on its own: a hit that is one piece of a chain
+    (recall's "[Stueck 2 von 4]" note) is expanded to the whole chain and
+    returned as ONE merged citation, not a fragment starting mid-sentence.
     Two hits from the same chain count as one citation, not two.
 
     **Only the top hit comes back in full text** (FRAGE_VOLLTEXT), the rest
@@ -1791,10 +1743,10 @@ def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
     hit, the same question is answered with fewer characters AND fewer round
     trips than the two-step path - the whole frontier is at FRAGE_VOLLTEXT.
 
-    What the stop word list contributes: nothing measurable yet. It fires on
-    8 % of real queries and changes the outcome on none of them, because real
-    queries are keyword chains, not sentences (see _STOPWORT). What pays
-    today is the chain resolution and the full-text-plus-preview shape.
+    A German stop word list used to sit in front of the cascade here, to trim
+    a whole question down to its content words. It was measured twice, moved
+    nothing either time, and has been removed - see the note above _kette_texte
+    before putting it back.
 
     What it deliberately does NOT do: write a synthesized answer. That is
     the calling model's job. This project's recall() already leans on that
@@ -1806,8 +1758,8 @@ def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
     same kind of measurement first.
 
     Args:
-        frage: A question in plain German (or a handful of keywords - falls
-            back to those verbatim if stripping leaves nothing searchable).
+        frage: A question, or a handful of search terms - both are handed to
+            the cascade unchanged, exactly as recall() would.
         marke: Restrict to one project, e.g. "raumschiff-project".
         art: Restrict to kinds of knowledge, e.g. "fallstrick,entscheidung".
         limit: Maximum number of hits (default 8, same as recall). The first
@@ -1822,24 +1774,23 @@ def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
     except ValueError as exc:
         return f"Fehler: {exc}"
 
-    begriffe = _fragewoerter(frage) or _terme(frage)
-    if not begriffe:
-        return f"Fehler: keine durchsuchbaren Woerter in: {frage}"
-    query = " ".join(begriffe)
-
     conn = _connect()
     try:
-        rows, fehler, hinweis = _kaskade(conn, query, limit, filter_, marke)
+        rows, fehler, hinweis = _kaskade(conn, frage, limit, filter_, marke)
         ketten = _kette_texte(conn, [r[0] for r in rows])
         vermerke = _ketten_von(conn, [r[0] for r in rows])
     finally:
         conn.close()
 
     if fehler:
-        return f"Ungueltige Suchanfrage nach Bereinigung ({query}): {fehler}"
+        return (
+            f"Ungueltige Suchanfrage: {fehler}\n"
+            'Tipp: Sonderzeichen in doppelte Anfuehrungszeichen setzen. '
+            'Operatoren: AND, OR, NOT, praefix*, "phrase".'
+        )
     in_marke = f" in {marke}" if _marken(marke) else ""
     if not rows:
-        return f"Keine Belegstellen fuer: {frage}{in_marke} (gesucht als: {query})"
+        return f"Keine Belegstellen fuer: {frage}{in_marke}"
 
     # Nach Kette entdoppelt: zwei Treffer aus demselben zerschnittenen Memo
     # sind EIN Beleg, nicht zwei.
@@ -1865,8 +1816,7 @@ def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
     ]
 
     kopf_zeile = (
-        f"{len(belege)} Belegstelle(n) im Volltext zu '{frage}'"
-        f"{in_marke}{hinweis} (gesucht als: {query}):"
+        f"{len(belege)} Belegstelle(n) im Volltext zu '{frage}'{in_marke}{hinweis}:"
     )
     aus = kopf_zeile + "\n\n" + "\n\n".join(belege)
     if rest:

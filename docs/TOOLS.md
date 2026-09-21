@@ -174,33 +174,35 @@ count as syntax — it shows up constantly in German questions.
 On `limit`: 8 is measured. Below that, morphology blending crowds out
 exact hits; above it, mostly the returned payload grows.
 
-## `frage(frage, marke="", art="", limit=6)`
+## `frage(frage, marke="", art="", limit=8)`
 
-`recall`'s cascade (phrase → all terms → any term → stem/word part) is
-tuned for a handful of search terms, not a full sentence. Feed it a whole
-question and the interrogatives and auxiliaries ("why", "does", "than",
-…) sit in the term list right alongside the words that actually
-distinguish an answer — stage 2's `AND` then demands all of them, or
-stage 3 lets any of them stand in for the real terms. `frage` strips a
-fixed list of German question words, pronouns, articles, prepositions and
-auxiliary verbs first, then hands the rest to the same cascade `recall`
-uses. If stripping leaves nothing searchable (a question made entirely of
-stop words), it falls back to `recall`'s own unfiltered tokenizing rather
-than returning nothing.
+The same search as `recall` — same cascade, same filters, the query is
+handed over unchanged. What differs is the **shape of the answer**, and
+that is the whole tool.
 
-It also resolves chain notes on its own. A hit that is one piece of a
-memo cut apart during import (`recall`'s "[Stueck 2 von 4]" note) is
-expanded to the **whole chain** and returned as one merged citation
-instead of a fragment starting mid-sentence — the caller doesn't have to
-notice the note and fetch the rest with `zeige`.
+It resolves chain notes on its own. A hit that is one piece of a memo cut
+apart during import (`recall`'s "[Stueck 2 von 4]" note) is expanded to
+the **whole chain** and returned as one merged citation instead of a
+fragment starting mid-sentence — the caller doesn't have to notice the
+note and fetch the rest with `zeige`. Two hits from the same chain count
+as one citation, not two.
 
 ```
 frage("Warum nutzt SnAI lieber LoRA als ein volles Finetune?")
 ```
 
-returns full-text citations, each tagged with its id (or id range for a
-resolved chain), kind, date and tags — the same shape as `zeige`'s
-output, just pre-selected and pre-merged for the question asked.
+returns the top hit in full text — tagged with its id (or id range for a
+resolved chain), kind, date and tags, the same shape as `zeige`'s output
+— followed by the remaining hits as preview lines.
+
+A German stop word list used to sit in front of the cascade, trimming a
+question down to its content words. It was measured twice — against the
+117 real questions that carry a gold answer, and against the 47 real
+reformulation chains — and moved **zero** cases either time, because real
+queries here are keyword chains ("Aethel Core API Key Umgebungsvariable"),
+not sentences: `recall` trained its callers that way. It was removed on
+2026-09-21 as dead weight. Before putting anything like it back, measure
+whether question-shaped queries are actually being asked.
 
 Only the **top hit** comes back in full text; the rest are `recall`'s
 preview lines, with the id to fetch them by. That split is measured, not
@@ -238,15 +240,10 @@ foresight. And when re-measuring, the second round's characters have to
 be counted — leaving them out made two full texts look like −31 % instead
 of +7 %.
 
-**What the stop word list contributes: nothing measurable yet.** It fires
-on 21 of 265 real queries (8 %) and changes the outcome on none of them,
-because real queries are keyword chains ("Aethel Core API Key
-Umgebungsvariable"), not sentences — `recall` trained its callers that
-way. It is kept as a bet on the usage `frage` is meant to enable, because
-it demonstrably breaks nothing: no tag is itself a stop word, and
-sentence-like tags stay findable through their remaining parts (9/10
-either way). Showing the *gain* would take invented questions, which
-MESSKRITERIUM.md rules out.
+The hit rate is the same as `recall`'s, because it *is* `recall`'s
+search: 91/117 on the questions with a gold answer, 30/47 on the
+reformulation chains, identical on both before and after the stop word
+list was removed.
 
 **What it deliberately does not do: write an answer.** Synthesizing one
 from several citations is a harder job than the single-word judgment
