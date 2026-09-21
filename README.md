@@ -93,7 +93,7 @@ single entry and you get it back as a single hit, having gained nothing.
 |---|---|
 | `remember(text, tags, art, ersetzt)` | store an entry; reports similar existing ones and what it would supersede |
 | `recall(query, limit, art, marke, …)` | ranked full-text search, preview by default |
-| `frage(frage, marke, art, limit)` | turns a whole question into search terms; top hit in full, rest as preview — no synthesis |
+| `frage(frage, marke, art, limit)` | same search as `recall`, but top hit in full text, chains resolved, rest as preview |
 | `zeige(ids)` | full text of specific entries |
 | `themen(marke, limit)` | browse: which projects exist, or one project's title lines |
 | `vergessen(ids, grund)` | mark as outdated — never deletes |
@@ -115,12 +115,31 @@ installation, not a benchmark:
 - **82.3 % Recall@10** against the public LoCoMo dataset, untuned, first
   run, at 2 ms and 2.7 KB per query.
 - **73 % smaller returns** from the preview, with a calculable worst case.
-- **64 % → 77 %** hit rate from a one-line ranking fix — found by measuring
-  where real search sessions had failed, not by guessing.
+- **53 % → 64 %** hit rate on 47 real reformulation chains from a one-line
+  ranking fix — found by measuring where real search sessions had failed,
+  not by guessing. On today's dataset the same fix also *costs* 3 of the 117
+  questions that already worked, so the net is +2 of 164.
 
 Where a measurement did not survive a larger sample, it says so:
 [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md), and the raw reports in
-[`messung/`](messung/).
+[`messung/`](messung/). The ranking figure above is the clearest case: it
+read **64 % → 77 %** until 2026-09-21. Two things were wrong with it, and
+they are wrong in different ways.
+
+The **numbers** were too high because the hit count scanned the output for
+any `#id`, which also catches the `[[#1234]]` cross-references *inside*
+another hit's title line. That was a counting bug and it was there from the
+first run; on the original dataset, counted strictly, the pair is
+49 % → 68 %.
+
+The **claim that the fix was free** was true when it was written and is not
+true any more. Re-run against the 2026-09-15 snapshot, the fix *gains* 3 of
+the 117 questions that already worked; against today's, 29 % more entries
+later, it *loses* 3. Net over both sets: +12 of 164 then, +2 of 164 now. More
+entries mean more competition for the same eight slots, and this fix spends
+part of that budget on morphological variants — so its value shrinks as the
+dataset grows. The direction still holds; the margin is thinner than
+published, and getting thinner.
 
 ## Documentation
 
