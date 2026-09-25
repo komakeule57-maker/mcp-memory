@@ -112,6 +112,35 @@ asked. The bench only knows the 265 real queries, and inventing questions is
 ruled out — they would be invented by the same system that is being
 measured.
 
+### One Slot per Chain
+
+258 entries are pieces of memos the import cut apart (110 chains). When
+several pieces of one chain ranked among the eight hits, they said the
+same thing and took slots other entries needed. Since 2026-09-25 the
+best-ranked piece stays, the rest are folded in, and the cascade fetches
+up to twice `limit` candidates to refill the freed slots.
+
+Criterion, fixed beforehand: this is a bug fix, not a ranking lever, so
+the measurement had to rule out harm, not justify a gain — anything under
+10 % counts as unchanged. 260 real questions with a gold answer, a fresh
+copy of the live dataset, `marke=` set, feedback loop off, `limit=8`; the
+comparison arm is the same source with the fix disabled at two lines.
+
+| | before | after |
+|---|---|---|
+| questions with slots taken by sibling pieces | 8.5 % | 0.0 % |
+| gold at rank 1 | 39.6 % | 39.6 % |
+| gold among the 8 | 81.2 % | 80.0 % |
+| characters | — | +0.2 % |
+| latency (median of 5 alternating runs) | 1.88 ms | 2.01 ms (+6.8 %) |
+
+No number went up, and that is not an objection — a bug fix does not need
+a gain. The −1.4 % among the 8 are an artifact of the measure: in all
+three lost questions the gold was a *second* piece of a chain whose first
+piece was listed. Counting "gold or a sibling of its chain", it is 81.2 %
+either way. A single run's latency swung between +5 and +16 %, hence the
+median.
+
 ## Limitations
 
 - **`grep` beats it at compounds** (57/60 vs. 31/60). That's not a defect,

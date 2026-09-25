@@ -160,6 +160,14 @@ fragment from the file import, the context does **not** live in it, and
 the whole chain needs reading (`zeige("872,873,874,875")`). Why these
 exist: [What the Import Broke](IMPORT.md#what-the-import-broke).
 
+**A chain takes one of the eight slots, not several.** If more than one
+piece of the same memo matches, only the best-ranked one is listed; the
+others are not missing but folded in, and the span in the note is the
+complete information. The freed slots are refilled from the next hits
+down, so the list stays at `limit` instead of getting shorter. Before
+this, 8.5 % of real questions had slots taken by sibling pieces, in one
+case four of eight ([MEASUREMENTS.md](MEASUREMENTS.md#one-slot-per-chain)).
+
 `art="fallstrick,entscheidung"` restricts to kinds of knowledge,
 `art="alle"` also lifts the chronicle's exclusion.
 
@@ -219,7 +227,27 @@ apart during import (`recall`'s "[Stueck 2 von 4]" note) is expanded to
 the **whole chain** and returned as one merged citation instead of a
 fragment starting mid-sentence — the caller doesn't have to notice the
 note and fetch the rest with `zeige`. Two hits from the same chain count
-as one citation, not two.
+as one citation, not two — the same folding `recall` does, which `frage`
+inherits from the shared cascade. (Until 2026-09-25 it had its own,
+without refilling, and so regularly returned fewer than `limit` hits.)
+
+**It is not the cheaper path.** Measured over 275 real questions,
+counting every round a question needs: `frage` costs **+10 % characters in
+total, +18 % in the median**, for 1.93 rounds instead of 2.00 — and no
+class of question was found where it wins, not even questions whose answer
+sits in a cut-apart chain (1.13×). The full-text head costs 1,312
+characters every time and saves a `zeige` of 3,892 only with probability
+p, so it pays off from p > 34 %. Use it when **one** entry answers the
+question and is likely to be rank 1 — mostly word-for-word repeats, where
+the feedback loop lifts it there. Otherwise `recall` + `zeige`.
+
+Pass `marke=` whenever the project is known: without it the full-text
+head comes from the **wrong project** in 34 % of cases, and the answer is
+in the head in 25.8 % instead of 36.4 %. Keep the project name in the
+question too — dropping it because `marke=` already says it costs 15 %.
+Two limits: cross-cutting tags (shell pitfalls, ways of working) are hurt
+by the restriction, and sibling projects are not separated, because
+crossover entries carry both tags.
 
 ```
 frage("Warum nutzt SnAI lieber LoRA als ein volles Finetune?")
@@ -273,6 +301,15 @@ that answered in production, granting the two-step path perfect
 foresight. And when re-measuring, the second round's characters have to
 be counted — leaving them out made two full texts look like −31 % instead
 of +7 %.
+
+**Corrected on 2026-09-25:** the comparison against the baseline above
+does not hold. A re-measurement over 275 questions found the counting
+error behind a similar result: a question was booked as answered in one
+round as soon as *one* of the entries it needed stood in the full-text
+head, even when it needed four. Counted correctly, one full-text hit is
++10 % characters against the two-step path, not −8 % (see above). What
+the table still shows is the *shape* — each further full text costs more
+than it saves; the shapes were not re-measured against each other.
 
 The hit rate is the same as `recall`'s, because it *is* `recall`'s
 search: 91/117 on the questions with a gold answer, 30/47 on the
