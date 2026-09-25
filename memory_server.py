@@ -1741,28 +1741,78 @@ def _rueckkopplung_zeilen(conn, query: str, limit: int, filter_, marke: str) -> 
     return zeilen[:limit]
 
 
+def _ketten_entdoppeln(conn, rows, limit: int):
+    """Ein zerschnittenes Memo belegt EINEN Platz, nicht drei.
+
+    258 Eintraege sind Glieder zerschnittener Memos. Standen mehrere Glieder
+    derselben Kette unter den acht Treffern, sagten sie dasselbe und kosteten
+    Plaetze, die ein anderer Eintrag gebraucht haette. Verloren geht dabei
+    nichts: der Aufrufer muss die Kette ohnehin am Stueck lesen, und der
+    Kettenvermerk an der verbliebenen Zeile nennt die ganze Spanne
+    ("[Stueck 2 von 4, zerschnittenes Memo #872-#875]"). Es wird also einmal
+    gesagt statt dreimal.
+
+    Das bestbewertete Glied gewinnt - die Reihenfolge von `rows` bleibt
+    unangetastet, jedes weitere Glied derselben Kette faellt heraus.
+    Aufgefuellt wird aus dem Vorrat, den `_kaskade` ueber `limit` hinaus
+    geholt hat; ohne ihn wuerde die Liste nur kuerzer statt besser.
+    """
+    if len(rows) <= 1:
+        return rows[:limit]
+    platz = ",".join("?" * len(rows))
+    kopf_von = dict(
+        conn.execute(
+            f"SELECT id, kopf FROM eintrag WHERE kopf IS NOT NULL AND id IN ({platz})",
+            tuple(r[0] for r in rows),
+        )
+    )
+    if not kopf_von:
+        return rows[:limit]
+    aus, gesehen = [], set()
+    for r in rows:
+        kopf = kopf_von.get(r[0])
+        if kopf is not None:
+            if kopf in gesehen:
+                continue
+            gesehen.add(kopf)
+        aus.append(r)
+        if len(aus) >= limit:
+            break
+    return aus
+
+
 def _kaskade(conn, query: str, limit: int, filter_=("", ()), marke: str = ""):
-    """Die Kaskade, und davor die Rueckkopplung.
+    """Die Kaskade, davor die Rueckkopplung, danach die Kettenentdoppelung.
 
     Wer selbst FTS5-Syntax schreibt, bekommt genau die - dort feuert die
     Rueckkopplung nicht, aus demselben Grund, aus dem die Kaskade dort ihre
-    Stufen nicht aufspannt.
+    Stufen nicht aufspannt. Die Entdoppelung gilt trotzdem: sie erweitert
+    keine Anfrage, sie sagt dasselbe nur nicht mehrfach.
+
+    Geholt wird mehr als `limit`, damit die Entdoppelung die frei werdenden
+    Plaetze auffuellen kann, statt die Liste zu verkuerzen. Der Deckel der
+    Morphologiestufe bleibt dabei ausdruecklich `limit`: er entscheidet ueber
+    das Mischungsverhaeltnis exakter und morphologischer Treffer und ist in
+    dieser Hoehe gemessen worden (siehe _kaskade_roh).
     """
-    rows, fehler, hinweis = _kaskade_roh(conn, query, limit, filter_, marke)
+    vorrat = min(limit * 2, 50)
+    rows, fehler, hinweis = _kaskade_roh(conn, query, limit, filter_, marke, vorrat)
     if not RUECKKOPPLUNG or fehler or _ist_explizite_syntax(query):
-        return rows, fehler, hinweis
+        return _ketten_entdoppeln(conn, rows, limit), fehler, hinweis
     vorn = _rueckkopplung_zeilen(conn, query, limit, filter_, marke)
     if not vorn:
-        return rows, fehler, hinweis
+        return _ketten_entdoppeln(conn, rows, limit), fehler, hinweis
     # Sichtbar machen, nicht heimlich umsortieren: eine Rangfolge, die von
     # frueheren Sitzungen abhaengt, ist sonst nicht nachzuvollziehen - und
     # ein falsch gemerktes Paar faellt nie auf.
     gesehen = {z[0] for z in vorn}
     rows = vorn + [r for r in rows if r[0] not in gesehen]
-    return rows[:limit], None, hinweis + " (+ schon einmal so gesucht)"
+    return (_ketten_entdoppeln(conn, rows, limit), None,
+            hinweis + " (+ schon einmal so gesucht)")
 
 
-def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()), marke: str = ""):
+def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()),
+                 marke: str = "", vorrat: int = 0):
     """Stufen von genau nach grosszuegig.
 
     1. die Wortfolge als Phrase - setzt sich vor Stufe 2, verdraengt sie nicht
@@ -1776,8 +1826,12 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()), marke: str = ""
     die Staffelung waere hinfaellig.
     """
     kl = _marken_klausel(marke)
+    # `holen` ist die Zahl der KANDIDATEN, `limit` die der Plaetze. Beide
+    # waren dasselbe, bis die Kettenentdoppelung dazukam; getrennt sind sie,
+    # damit ein herausgefallenes Kettenglied nachbesetzt werden kann.
+    holen = vorrat or limit
     if _ist_explizite_syntax(query):
-        rows, fehler = _suche(conn, _mit_marke(_auf_inhalt(query), kl), limit, filter_)
+        rows, fehler = _suche(conn, _mit_marke(_auf_inhalt(query), kl), holen, filter_)
         return rows, fehler, ""
 
     terme = _terme(query)
@@ -1785,7 +1839,7 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()), marke: str = ""
         return [], None, ""
 
     genau = " AND ".join(f'{{content tags}} : "{t}"' for t in terme)
-    rows, fehler = _suche(conn, _mit_marke(genau, kl), limit, filter_)
+    rows, fehler = _suche(conn, _mit_marke(genau, kl), holen, filter_)
     hinweis = ""
     if len(terme) > 1:
         # Die Wortfolge nach vorn. AND ueber getrennte Token laesst BM25 nur
@@ -1798,14 +1852,14 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()), marke: str = ""
         folge, _ = _suche(
             conn,
             _mit_marke(f'{{content tags}} : "{" ".join(terme)}"', kl),
-            limit,
+            holen,
             filter_,
         )
         if folge:
-            rows = (folge + [r for r in rows if r not in folge])[:limit]
+            rows = (folge + [r for r in rows if r not in folge])[:holen]
     if not rows and len(terme) > 1:
         oder = " OR ".join(f'{{content tags}} : "{t}"' for t in terme)
-        rows, fehler = _suche(conn, _mit_marke(oder, kl), limit, filter_)
+        rows, fehler = _suche(conn, _mit_marke(oder, kl), holen, filter_)
         if rows:
             hinweis = " (ODER - kein Eintrag enthaelt alle Begriffe)"
 
@@ -1815,10 +1869,10 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()), marke: str = ""
     # Wortteil vor Stamm: "Katalysator" in einem Kompositum zu finden ist
     # spezifischer als irgendeine gebeugte Form desselben Stammes.
     teil, _ = _suche(
-        conn, _mit_marke(" OR ".join(f'teile:"{t.lower()}"' for t in terme), kl), limit, filter_
+        conn, _mit_marke(" OR ".join(f'teile:"{t.lower()}"' for t in terme), kl), holen, filter_
     )
     stamm, _ = _suche(
-        conn, _mit_marke(" OR ".join(f'stems:"{stem(t)}"' for t in terme), kl), limit, filter_
+        conn, _mit_marke(" OR ".join(f'stems:"{stem(t)}"' for t in terme), kl), holen, filter_
     )
     morph = teil + [r for r in stamm if r not in teil]
     if not morph:
@@ -1839,10 +1893,10 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()), marke: str = ""
             if r[0] not in gesehen:
                 gesehen.add(r[0])
                 aus.append(r)
-    neu = [r for r in aus[:limit] if r not in rows]
+    neu = [r for r in aus[:holen] if r not in rows]
     if neu:
         hinweis += " (+ Stamm-/Wortteiltreffer)"
-    return aus[:limit], None, hinweis
+    return aus[:holen], None, hinweis
 
 
 # --------------------------------------------------------------------------
@@ -1919,13 +1973,13 @@ def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
     **Only the top hit comes back in full text** (FRAGE_VOLLTEXT), the rest
     as recall's preview lines with their ids. Returning everything in full
     was measured and rejected: it costs 98 % more characters than `recall`
-    plus a targeted `zeige`, because it throws away the preview. At one full
-    hit, the same question is answered with fewer characters AND fewer round
-    trips than the two-step path - the whole frontier is at FRAGE_VOLLTEXT.
+    plus a targeted `zeige`, because it throws away the preview. One full hit
+    is the cheapest shape of this tool - but still ~10 % MORE characters than
+    the two-step path, for 0.07 fewer rounds. Use it when ONE entry answers
+    the question and is likely to be rank 1; otherwise use recall + zeige.
 
-    A German stop word list used to sit in front of the cascade here, to trim
-    a whole question down to its content words. It was measured twice, moved
-    nothing either time, and has been removed - see the note above _kette_texte
+    The German stop word list that used to sit in front of the cascade was
+    measured twice, moved nothing, and is gone - see the note at _kette_texte
     before putting it back.
 
     What it deliberately does NOT do: write a synthesized answer. That is
@@ -1940,7 +1994,11 @@ def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
     Args:
         frage: A question, or a handful of search terms - both are handed to
             the cascade unchanged, exactly as recall() would.
-        marke: Restrict to one project, e.g. "raumschiff-project".
+        marke: Restrict to one project, e.g. "raumschiff-project". Pass it
+            whenever the project is known: measured over 275 real questions,
+            without it the top hit comes from the WRONG project in 34 % of
+            cases. Keep the project name in the question too. Does not
+            separate sibling projects that share entries.
         art: Restrict to kinds of knowledge, e.g. "fallstrick,entscheidung".
         limit: Maximum number of hits (default 8, same as recall). The first
             FRAGE_VOLLTEXT of them come in full text, the rest as preview.
@@ -1973,14 +2031,12 @@ def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
     if not rows:
         return f"Keine Belegstellen fuer: {frage}{in_marke}"
 
-    # Nach Kette entdoppelt: zwei Treffer aus demselben zerschnittenen Memo
-    # sind EIN Beleg, nicht zwei.
-    gesehen, treffer = set(), []
-    for zeile in rows:
-        kopf = ketten.get(zeile[0], (zeile[0],))[0]
-        if kopf not in gesehen:
-            gesehen.add(kopf)
-            treffer.append(zeile)
+    # Nach Kette entdoppelt wird schon in `_kaskade` - zwei Treffer aus
+    # demselben zerschnittenen Memo sind EIN Beleg, nicht zwei. Hier stand
+    # das bis 2026-09-25 noch einmal, tat aber nur die Haelfte: es strich das
+    # zweite Glied und besetzte den Platz nicht nach, also kam `frage`
+    # regelmaessig mit weniger als `limit` Treffern zurueck.
+    treffer = rows
 
     belege = []
     for rid, ts, content, tags, art_ in treffer[:FRAGE_VOLLTEXT]:
@@ -2212,6 +2268,36 @@ def einordnen(ids: str, art: str) -> str:
         aus += f" (nicht gefunden: {', '.join('#'+str(i) for i in fehlt)})"
     return aus + f"\nNoch {offen} Eintraege ohne Art."
 
+
+def _schema_entrumpeln() -> int:
+    """Nimmt die `title`-Felder aus den Parameterschemata der Werkzeuge.
+
+    Pydantic erzeugt zu jedem Parameter ein `"title"`, das nur den Feldnamen
+    grossschreibt (`{"query": {"title": "Query", "type": "string"}}`), dazu je
+    Werkzeug ein `"title": "recallArguments"`. Zusammen ist das ein Drittel
+    aller Schema-Zeichen und sagt nichts, was nicht danebenstuende.
+
+    Warum das zaehlt: die Werkzeugdefinitionen gehen in JEDER Sitzung in den
+    Kontext, vor der ersten Frage. Sie sind von 7.313 Zeichen (acht Werkzeuge,
+    2026-09-15) auf 12.215 gewachsen (neun, 2026-09-25) - bei fuenf Fragen je
+    Sitzung rund ein Drittel der Kosten des Lesepfads. Die 723 Zeichen hier
+    sind der Teil davon, der ohne jede Ermessensfrage wegkann
+    (messung/FIXKOSTEN-AUDIT.md).
+
+    `t.parameters` ist genau das Dict, das `list_tools()` als `input_schema`
+    ausliefert. Die Pruefung der Argumente haengt an `fn_metadata` und nicht
+    hieran; sie bleibt unberuehrt.
+    """
+    entfernt = 0
+    for werkzeug in server._tool_manager.list_tools():
+        entfernt += werkzeug.parameters.pop("title", None) is not None
+        for feld in werkzeug.parameters.get("properties", {}).values():
+            if isinstance(feld, dict):
+                entfernt += feld.pop("title", None) is not None
+    return entfernt
+
+
+_schema_entrumpeln()
 
 if __name__ == "__main__":
     server.run(transport="stdio")

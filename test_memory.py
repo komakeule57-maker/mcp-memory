@@ -293,6 +293,36 @@ def test_bruchstueck_wird_in_der_vorschau_als_solches_gemeldet():
     assert "Stueck 2 von 2" in ms.zeige("2"), ms.zeige("2")
 
 
+def test_kette_bekommt_einen_platz_und_der_rest_wird_nachbesetzt():
+    """K2, gemessen am 2026-09-25: bei 2,9 % der echten Fragen belegten mehrere
+    Glieder DESSELBEN zerschnittenen Memos mehrere der acht Plaetze. Sie sagen
+    dasselbe, der Aufrufer muss die Kette ohnehin am Stueck lesen, und der
+    Kettenvermerk nennt die ganze Spanne - der zweite Platz traegt also nichts
+    und fehlt einem anderen Eintrag. Entdoppeln allein genuegt aber nicht: wird
+    der frei gewordene Platz nicht nachbesetzt, ist die Liste nur kuerzer."""
+    # Die Kettenglieder muessen die besten Treffer sein, sonst misst der Test
+    # nichts: BM25 straft Laenge, also sind die Einzeleintraege lang.
+    lang = ("Dieser Eintrag beschreibt ausfuehrlich weitere Dinge des Hafens"
+            " und der Anlagen, damit er laenger ist als die Kettenglieder.")
+    for i in range(3):
+        ms.remember(f"Schleuse {i} wurde geprueft. {lang}",
+                    tags="schiff", art="schnittstelle")
+    ms.remember("Schleuse klemmt", tags="schiff", art="schnittstelle")
+    ms.remember("an der Schleuse steht Wasser,", tags="schiff", art="schnittstelle")
+    ms.remember("die Schleuse bleibt zu.", tags="schiff", art="schnittstelle")
+    conn = ms._connect()
+    assert ms._ketten_nachtragen(conn) == 3
+    conn.close()
+
+    aus = ms.recall("Schleuse", limit=3)
+    ids = re.findall(r"^#(\d+) \[", aus, re.M)
+    assert len(ids) == 3, f"Platz nicht nachbesetzt: {aus}"
+    aus_kette = [i for i in ids if i in ("4", "5", "6")]
+    assert len(aus_kette) == 1, f"Kette belegt mehrere Plaetze: {aus}"
+    # Gegenprobe: ohne Entdoppelung fuellte diese eine Kette ALLE drei Plaetze.
+    assert "#1" in aus or "#2" in aus or "#3" in aus, aus
+
+
 def test_kette_bindet_nur_zusammengehoeriges():
     """Zwei Sicherungen gegen Fehlalarm: ein sauber endender Eintrag bricht die
     Kette, und die Marke muss dieselbe sein - sonst klebt die letzte Notiz
@@ -933,6 +963,75 @@ def test_rueckkopplung_laesst_explizite_syntax_in_ruhe():
     ms.recall("Kessel Druck")
     ms.zeige("1")
     assert "schon einmal so gesucht" not in ms.recall("Kessel AND Druck")
+
+
+# --------------------------------------------------------------------------
+# Fixkosten der Werkzeugdefinitionen
+# --------------------------------------------------------------------------
+# Die neun Definitionen gehen in JEDER Sitzung in den Kontext, bevor die erste
+# Frage gestellt ist. Sie sind zwischen dem 2026-09-15 und dem 2026-09-25 von
+# 7.313 auf 12.215 Zeichen gewachsen, und es ist niemandem aufgefallen, weil
+# nichts sie angesehen hat (messung/FIXKOSTEN-AUDIT.md).
+#
+# Der Deckel ist keine Qualitaetsaussage, sondern eine Bremse: er laesst kleine
+# Korrekturen an einer Beschreibung durch und faengt ab, was eine Groessenordnung
+# hat - ein neues Werkzeug, oder ein Absatz Entwurfsbegruendung. Ihn anzuheben
+# ist erlaubt; er soll nur erzwingen, dass es eine Entscheidung ist und kein
+# Nebeneffekt. Wer anhebt, schreibt den Grund dazu.
+FIXKOSTEN_DECKEL = 11_800     # Stand 2026-09-25: 11.492 Z ueber neun Werkzeuge
+
+
+def _werkzeugdefinitionen():
+    """Die Definitionen so, wie `list_tools()` sie ueber die Leitung schickt."""
+    import asyncio
+    import json
+    werkzeuge = asyncio.run(ms.server.list_tools())
+    return {
+        w.name: json.dumps(
+            {"name": w.name, "description": w.description or "",
+             "inputSchema": w.input_schema},
+            ensure_ascii=False)
+        for w in werkzeuge
+    }
+
+
+def test_fixkosten_der_werkzeuge_bleiben_unter_dem_deckel():
+    """Jedes Wachstum hier zahlt jede Sitzung mit, auch die, die das Werkzeug
+    nie aufruft - deshalb gehoert es unter Beobachtung statt unter Vertrauen."""
+    teile = _werkzeugdefinitionen()
+    summe = sum(len(t) for t in teile.values())
+    if summe > FIXKOSTEN_DECKEL:
+        groesste = sorted(teile.items(), key=lambda kv: -len(kv[1]))[:3]
+        raise AssertionError(
+            f"Werkzeugdefinitionen {summe:,} Z, Deckel {FIXKOSTEN_DECKEL:,} Z "
+            f"({summe - FIXKOSTEN_DECKEL:+,} Z, ~{(summe - FIXKOSTEN_DECKEL)/2:.0f} "
+            f"Token je Sitzung). Groesste: "
+            + ", ".join(f"{n} {len(t):,}" for n, t in groesste)
+            + ". Entweder kuerzen oder FIXKOSTEN_DECKEL mit Begruendung anheben.")
+
+
+def test_die_parameterschemata_tragen_keine_title_felder():
+    """#2235: pydantic wiederholt im `title` nur den Feldnamen - ein Drittel
+    aller Schema-Zeichen fuer nichts. `_schema_entrumpeln()` raeumt das beim
+    Import weg; faellt der Aufruf weg oder aendert das SDK die Stelle, an der
+    das Schema haengt, kommen die 723 Zeichen lautlos zurueck."""
+    import asyncio
+    for w in asyncio.run(ms.server.list_tools()):
+        assert "title" not in w.input_schema, w.name
+        for feld, angaben in w.input_schema.get("properties", {}).items():
+            assert "title" not in angaben, f"{w.name}.{feld}"
+
+
+def test_ein_entrumpeltes_schema_nimmt_die_argumente_weiter_an():
+    """Die Gegenprobe zum Kuerzen: die Pruefung der Argumente haengt an
+    `fn_metadata`, nicht am ausgelieferten Schema - aber behauptet ist das
+    schnell, und ein kaputter Aufrufpfad waere ein teurer Preis fuer 723 Z."""
+    import asyncio
+    ms.remember("Die Ankerkette ist zu kurz", tags="schiff", art="fallstrick")
+    aus = asyncio.run(ms.server.call_tool("recall", {"query": "Ankerkette", "limit": 3}))
+    assert "Ankerkette" in str(aus)
+    aus = asyncio.run(ms.server.call_tool("zeige", {"ids": "1"}))
+    assert "Ankerkette" in str(aus)
 
 
 def main() -> int:
