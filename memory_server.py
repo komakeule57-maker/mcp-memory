@@ -1974,8 +1974,8 @@ def frage(frage: str, marke: str = "", art: str = "", limit: int = 8) -> str:
     as recall's preview lines with their ids. Returning everything in full
     was measured and rejected: it costs 98 % more characters than `recall`
     plus a targeted `zeige`, because it throws away the preview. One full hit
-    is the cheapest shape of this tool - but still ~10 % MORE characters than
-    the two-step path, for 0.07 fewer rounds. Use it when ONE entry answers
+    costs ~10 % MORE characters than the two-step path, for 0.08 fewer
+    rounds; every further one costs more and saves less. Use it when ONE entry answers
     the question and is likely to be rank 1; otherwise use recall + zeige.
 
     The German stop word list that used to sit in front of the cascade was

@@ -307,9 +307,33 @@ does not hold. A re-measurement over 275 questions found the counting
 error behind a similar result: a question was booked as answered in one
 round as soon as *one* of the entries it needed stood in the full-text
 head, even when it needed four. Counted correctly, one full-text hit is
-+10 % characters against the two-step path, not −8 % (see above). What
-the table still shows is the *shape* — each further full text costs more
-than it saves; the shapes were not re-measured against each other.
++10 % characters against the two-step path, not −8 % (see above).
+
+The shapes were then re-measured against each other with the corrected
+counting — 275 questions, a fresh copy per arm, `marke=` set, one knob
+(`FRAGE_VOLLTEXT`) on the real source. Main run with the feedback loop
+off, because the stored pairs come from the very sessions the questions
+come from; loop on as the cross-check:
+
+| full-text hits | characters vs. `recall`+`zeige`, loop off / on | rounds (of 550), off / on |
+|---|---|---|
+| 0 | +0.5 % / +0.5 % | 550 / 550 |
+| **1 (as built)** | **+10.1 % / +5.2 %** | **527 / 518** |
+| 2 | +23.6 % / +14.8 % | 507 / 493 |
+| 3 | +36.3 % / +25.9 % | 498 / 476 |
+| 8 | +107.9 % / +99.9 % | 465 / 430 |
+
+The direction holds: more full text always means more characters and
+fewer rounds, and no shape falls out of line. Two things in the old table
+do not hold. **One full-text hit is not the cheapest shape** — zero is,
+though within the 10 % tie margin. And the single steps 1→2 and 2→3 sit
+right at the threshold (+12 % and +10 % with the loop off, +9 % and +10 %
+with it on); the loop, a free choice of the setup, moves them across it,
+so neither step is a finding on its own — only 1→3 and 3→8 are. What one
+full-text hit buys is 23 rounds per 275 questions for about 142,000
+characters, roughly 6,200 characters per round saved. Whether that is
+worth it depends on what a round costs the caller, which this measurement
+cannot say.
 
 The hit rate is the same as `recall`'s, because it *is* `recall`'s
 search: 91/117 on the questions with a gold answer, 30/47 on the
