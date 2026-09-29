@@ -41,6 +41,12 @@ from morphologie import teile_spalte, wortschatz  # noqa: E402
 
 ECHTE_DB = Path(__file__).resolve().parent / "memory.db"
 
+# Sofort beim Import weg vom echten Bestand, nicht erst in `main()`. Bis
+# 2026-09-26 bog erst der Laeufer den Pfad um: wer einen einzelnen Test aus
+# der REPL rief oder die Datei an pytest gab, schrieb in die echte memory.db.
+# `main()` setzt je Test eine eigene frische Datei, das hier ist nur der Boden.
+ms.DB_PATH = Path(tempfile.mkdtemp(prefix="memtest-import-")) / "memory.db"
+
 
 # --------------------------------------------------------------------------
 # Suche
@@ -165,7 +171,6 @@ def test_neue_art_besteht_den_check_der_datenbank():
     ms.remember("Erster Eintrag", tags="probe", art="fallstrick")
     original = ms.ARTEN
     ms.ARTEN = original + ("kochrezept",)
-    ms._schema_geprueft = None  # Schemapruefung erneut erzwingen
     try:
         aus = ms.remember("Mit nagelneuer Art", tags="probe", art="kochrezept")
         assert "Gespeichert" in aus, aus
@@ -175,7 +180,6 @@ def test_neue_art_besteht_den_check_der_datenbank():
         assert gesetzt and gesetzt[0] == "kochrezept", gesetzt
     finally:
         ms.ARTEN = original
-        ms._schema_geprueft = None
 
 
 def test_zweimaliges_abloesen_gibt_zwei_vermerke():
@@ -484,6 +488,35 @@ def test_verdichten_nimmt_untermarken_mit():
     assert "2 Eintraege" in aus, aus
 
 
+def test_remember_zeigt_die_dublette():
+    """Der Hinweis selbst, nicht nur sein Scheitern. Vom 15. bis 26.09.2026
+    schwieg er bei jedem `remember`: `_dubletten` entpackte vier Spalten,
+    `_suche` lieferte seit Stand 5 fuenf, und den ValueError schluckte der
+    Notausgang in `remember`. Der einzige Test dazu ersetzte `_dubletten`
+    durch eine Attrappe und sah es deshalb nie."""
+    ms.remember("Der Dampfkessel im Keller braucht jeden Winter Frostschutz der Sorte Glysantin",
+                tags="haus", art="fallstrick")
+    aus = ms.remember("Der Dampfkessel im Keller braucht jeden Winter Frostschutz der Sorte Glysantin G48",
+                      tags="haus", art="fallstrick")
+    assert "Aehnliche Eintraege" in aus, aus
+    assert "  #1 (" in aus, aus
+
+
+def test_faktencheck_uebersteht_eine_leere_antwort():
+    """`content: null` ist eine gueltige Antwort, typisch fuer ein Denkmodell,
+    das seine 16 Token im Denken verbraucht. Frueher warf `urteil` dann einen
+    TypeError AUSSERHALB seines try - an `urteile()` vorbei, womit auch die
+    schon erhaltenen Urteile der anderen Paare verloren waren."""
+    fc = ms.faktencheck
+    assert fc is not None
+    echt = fc._post
+    fc._post = lambda *a, **k: {"choices": [{"message": {"content": None}}]}
+    try:
+        assert fc.urteil("Notiz A", "Notiz B") is None
+    finally:
+        fc._post = echt
+
+
 def test_remember_behaelt_den_text_wenn_der_dublettenhinweis_platzt():
     """Die Lehre aus #1426 lautet: was nach dem Schreiben noch scheitern kann,
     darf das Geschriebene nicht mitnehmen. Der Dublettenhinweis ist reine
@@ -582,7 +615,10 @@ def test_markenwaechter_schweigt_bei_gesetzter_marke():
     for _ in range(ms.MARKE_ETABLIERT):
         ms.remember("Eigener Zweig", tags="mcp-memory-cli", art="fallstrick")
     aus = ms.remember("Noch einer", tags="mcp-memory-cli", art="fallstrick")
-    assert "mcp-memory-cli" not in aus.split("Tags:")[-1].split("\n")[1:], aus
+    # Jede Form der Mahnung nennt die Marke in Anfuehrungszeichen. Die fruehere
+    # Pruefung fragte nach einer ZEILE, die genau "mcp-memory-cli" lautet - die
+    # gibt es nie, der Test bestand also auch, wenn der Waechter ewig mahnte.
+    assert "'mcp-memory-cli'" not in aus, aus
     assert "Dieselbe Sache" not in aus, aus
 
 
@@ -738,18 +774,28 @@ def test_pruefstand_baut_den_satz_aus_dem_speicher():
     entsteht und die `ersetzt=`-Beziehung aus `veraltet` ankommt."""
     a = ms.remember("Die Lernrate bleibt konstant, weil der Zerfall die Schritte erstickt.",
                     tags="probe", art="entscheidung")
-    ms.remember("Korrektur: der geometrische Zerfall ist widerlegt, es lag am Aufwaermen.",
-                tags="probe", art="entscheidung", ersetzt=re.search(r"#(\d+)", a).group(1))
+    # Bewusst OHNE Korrekturvokabel ("Korrektur", "widerlegt"): sonst nimmt
+    # ZWEIFELHAFT das Paar aus dem Satz, und geprueft waere nichts. Genau so
+    # bestand der Test bis 2026-09-26 - leben tat er von der Handliste daneben.
+    b = ms.remember("Die Lernrate faellt jetzt nach dem Aufwaermen linear auf null ab.",
+                    tags="probe", art="entscheidung", ersetzt=re.search(r"#(\d+)", a).group(1))
     ms.remember("Ein harmloser Absatz ueber ganz andere Dinge, naemlich Schiffe.",
                 tags="probe", art="verlauf")
+    alt_gebaut = pruefstand_fc.GEBAUT
+    # Die echte Handliste im Projektordner bleibt draussen - der Satz soll aus
+    # DIESEM Bestand entstehen, nicht aus einer Datei neben dem Test.
+    pruefstand_fc.GEBAUT = ms.DB_PATH.parent / "keine_handliste.json"
     conn = ms._connect()
     try:
         paare = pruefstand_fc.satz(conn, leicht=2, schwer=2)
         bestand = conn.execute("SELECT count(*) FROM eintrag").fetchone()[0]
     finally:
         conn.close()
+        pruefstand_fc.GEBAUT = alt_gebaut
     assert bestand == 3
-    assert paare, "kein einziges Pruefpaar aus dem Bestand gebaut"
+    id_a, id_b = (int(re.search(r"#(\d+)", t).group(1)) for t in (a, b))
+    ersetzt = [(p.id_a, p.id_b) for p in paare if p.quelle == "ersetzt"]
+    assert ersetzt == [(id_a, id_b)], (ersetzt, [p.quelle for p in paare])
 
 
 def test_jedes_skript_laeuft_trocken_gegen_eine_stand_5_datenbank():
@@ -1029,7 +1075,9 @@ def test_ein_entrumpeltes_schema_nimmt_die_argumente_weiter_an():
     import asyncio
     ms.remember("Die Ankerkette ist zu kurz", tags="schiff", art="fallstrick")
     aus = asyncio.run(ms.server.call_tool("recall", {"query": "Ankerkette", "limit": 3}))
-    assert "Ankerkette" in str(aus)
+    # Nach dem Treffer fragen, nicht nach dem Suchwort - das steht auch in
+    # "Keine Treffer fuer: Ankerkette".
+    assert "#1 [" in str(aus), aus
     aus = asyncio.run(ms.server.call_tool("zeige", {"ids": "1"}))
     assert "Ankerkette" in str(aus)
 
@@ -1043,11 +1091,10 @@ def main() -> int:
     for name, fall in faelle:
         ordner = Path(tempfile.mkdtemp(prefix="memtest-"))
         ms.DB_PATH = ordner / "memory.db"
-        ms._schema_geprueft = None
         # Die offenen Fragen haengen am Prozess, nicht an der Datenbank - ohne
         # dieses Zuruecksetzen traegt ein Test die Suche des vorigen weiter.
         del ms._OFFENE_FRAGEN[:]
-        assert ms.DB_PATH != ECHTE_DB, "Testlauf zeigt auf den echten Bestand - abgebrochen"
+        assert ms.DB_PATH.resolve() != ECHTE_DB, "Testlauf zeigt auf den echten Bestand - abgebrochen"
         try:
             fall()
             print(f"  ok    {name}")

@@ -1240,7 +1240,10 @@ def _dubletten(conn, text: str, ausser: int, schwelle: float = 0.55) -> list:
     neu = _staemme(text)
     gew = _gewichte(conn, neu)
     treffer = []
-    for rid, _, inhalt, _ in zeilen:
+    # Fuenf Spalten wie jede `_suche`-Zeile. Hier stand bis 2026-09-26 ein
+    # Entpacken auf vier - der ValueError ging im `except Exception` von
+    # `remember` unter, und der Hinweis schwieg seit Stand 5 bei jedem Aufruf.
+    for rid, _ts, inhalt, _tags, _art in zeilen:
         if rid == ausser:
             continue
         anteil = _ueberschneidung(neu, _staemme(inhalt), gew)

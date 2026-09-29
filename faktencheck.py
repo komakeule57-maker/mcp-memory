@@ -249,6 +249,12 @@ def urteil(a: str, b: str, frist: float = FRAGE_FRIST):
     except Exception as fehler:
         _sperren(_sperrdauer(fehler))
         return None
+    # `content: null` ist eine gueltige Antwort und kein Geraetefehler - ein
+    # Denkmodell verbraucht die 16 Token schon im Denken. Ohne diese Zeile
+    # flog der TypeError an `urteile()` vorbei und nahm die schon erhaltenen
+    # Urteile der uebrigen Paare mit.
+    if not isinstance(roh, str):
+        return None
     s = _THINK.sub("", roh).strip().upper().replace("Ä", "AE")
     for wort in URTEILE:
         if wort in s:
