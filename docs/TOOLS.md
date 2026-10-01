@@ -3,9 +3,9 @@
 Reference for all eight MCP tools. The fact check behind `pruefe` has its
 own page: [FACTCHECK.md](FACTCHECK.md).
 
-## Across `recall`, `frage` and `zeige`: the feedback loop
+## Across `recall` and `zeige`: the feedback loop
 
-These three tools share one piece of state. When a search is followed by a
+These two tools share one piece of state. When a search is followed by a
 `zeige`, the server stores the pair — the **wording that was searched for**
 and the **entry that was then fetched**. Ask the same thing again and those
 entries come first, and the header says so: `(+ schon einmal so gesucht)`.
@@ -216,138 +216,15 @@ count as syntax — it shows up constantly in German questions.
 On `limit`: 8 is measured. Below that, morphology blending crowds out
 exact hits; above it, mostly the returned payload grows.
 
-## `frage(frage, marke="", art="", limit=8)`
+## `frage()` — removed 2026-10-01
 
-The same search as `recall` — same cascade, same filters, the query is
-handed over unchanged. What differs is the **shape of the answer**, and
-that is the whole tool.
-
-It resolves chain notes on its own. A hit that is one piece of a memo cut
-apart during import (`recall`'s "[Stueck 2 von 4]" note) is expanded to
-the **whole chain** and returned as one merged citation instead of a
-fragment starting mid-sentence — the caller doesn't have to notice the
-note and fetch the rest with `zeige`. Two hits from the same chain count
-as one citation, not two — the same folding `recall` does, which `frage`
-inherits from the shared cascade. (Until 2026-09-25 it had its own,
-without refilling, and so regularly returned fewer than `limit` hits.)
-
-**It is not the cheaper path.** Measured over 275 real questions,
-counting every round a question needs: `frage` costs **+10 % characters in
-total, +18 % in the median**, for 1.93 rounds instead of 2.00 — and no
-class of question was found where it wins, not even questions whose answer
-sits in a cut-apart chain (1.13×). The full-text head costs 1,312
-characters every time and saves a `zeige` of 3,892 only with probability
-p, so it pays off from p > 34 %. Use it when **one** entry answers the
-question and is likely to be rank 1 — mostly word-for-word repeats, where
-the feedback loop lifts it there. Otherwise `recall` + `zeige`.
-
-Pass `marke=` whenever the project is known: without it the full-text
-head comes from the **wrong project** in 34 % of cases, and the answer is
-in the head in 25.8 % instead of 36.4 %. Keep the project name in the
-question too — dropping it because `marke=` already says it costs 15 %.
-Two limits: cross-cutting tags (shell pitfalls, ways of working) are hurt
-by the restriction, and sibling projects are not separated, because
-crossover entries carry both tags.
-
-```
-frage("Warum nutzt SnAI lieber LoRA als ein volles Finetune?")
-```
-
-returns the top hit in full text — tagged with its id (or id range for a
-resolved chain), kind, date and tags, the same shape as `zeige`'s output
-— followed by the remaining hits as preview lines.
-
-A German stop word list used to sit in front of the cascade, trimming a
-question down to its content words. It was measured twice — against the
-117 real questions that carry a gold answer, and against the 47 real
-reformulation chains — and moved **zero** cases either time, because real
-queries here are keyword chains ("Aethel Core API Key Umgebungsvariable"),
-not sentences: `recall` trained its callers that way. It was removed on
-2026-09-21 as dead weight. Before putting anything like it back, measure
-whether question-shaped queries are actually being asked.
-
-Only the **top hit** comes back in full text; the rest are `recall`'s
-preview lines, with the id to fetch them by. That split is measured, not
-guessed. Against the 117 real questions that carry a gold answer, all
-paths over the same cases, counting **both** costs per question — the
-`frage` output, plus the follow-up `zeige` wherever the answer wasn't in
-the full-text part already:
-
-| full-text hits | hit rate | characters | rounds |
-|---|---|---|---|
-| 0 (= the old two-step path) | 91/117 | 603,188 (+1 %) | 234 |
-| **1 (as built)** | **91/117** | **549,045 (−8 %)** | **189** |
-| 2 | 91/117 | 637,812 (+7 %) | 175 |
-| 3 | 91/117 | 719,193 (+21 %) | 165 |
-| 8 (everything in full) | 91/117 | 1,177,856 (+98 %) | 143 |
-
-Baseline (`recall(8)` + a targeted `zeige`): 595,962 characters, 234
-rounds.
-
-**The hit rate does not depend on this at all** — every hit is shown
-either way, just some as a preview. The choice is purely characters
-against round trips, and one full-text hit is the only value that beats
-the baseline on *both*. Going to two costs 16 % more characters — a real
-difference — to save 7 % of round trips, which under
-[MESSKRITERIUM.md](../messung/MESSKRITERIUM.md)'s "anything under 10 %
-counts as nothing" is not one. Each further full text buys less and costs
-more: 6,340 characters per round saved going from 1 to 2, and 25,527
-going from 6 to 8. The first one is worth it because the top hit already
-*is* the answer in 45 of 117 cases; the second hits far more rarely for
-the same price.
-
-The baseline is *flattered*, too: `zeige(gold)` fetches exactly the ids
-that answered in production, granting the two-step path perfect
-foresight. And when re-measuring, the second round's characters have to
-be counted — leaving them out made two full texts look like −31 % instead
-of +7 %.
-
-**Corrected on 2026-09-25:** the comparison against the baseline above
-does not hold. A re-measurement over 275 questions found the counting
-error behind a similar result: a question was booked as answered in one
-round as soon as *one* of the entries it needed stood in the full-text
-head, even when it needed four. Counted correctly, one full-text hit is
-+10 % characters against the two-step path, not −8 % (see above).
-
-The shapes were then re-measured against each other with the corrected
-counting — 275 questions, a fresh copy per arm, `marke=` set, one knob
-(`FRAGE_VOLLTEXT`) on the real source. Main run with the feedback loop
-off, because the stored pairs come from the very sessions the questions
-come from; loop on as the cross-check:
-
-| full-text hits | characters vs. `recall`+`zeige`, loop off / on | rounds (of 550), off / on |
-|---|---|---|
-| 0 | +0.5 % / +0.5 % | 550 / 550 |
-| **1 (as built)** | **+10.1 % / +5.2 %** | **527 / 518** |
-| 2 | +23.6 % / +14.8 % | 507 / 493 |
-| 3 | +36.3 % / +25.9 % | 498 / 476 |
-| 8 | +107.9 % / +99.9 % | 465 / 430 |
-
-The direction holds: more full text always means more characters and
-fewer rounds, and no shape falls out of line. Two things in the old table
-do not hold. **One full-text hit is not the cheapest shape** — zero is,
-though within the 10 % tie margin. And the single steps 1→2 and 2→3 sit
-right at the threshold (+12 % and +10 % with the loop off, +9 % and +10 %
-with it on); the loop, a free choice of the setup, moves them across it,
-so neither step is a finding on its own — only 1→3 and 3→8 are. What one
-full-text hit buys is 23 rounds per 275 questions for about 142,000
-characters, roughly 6,200 characters per round saved. Whether that is
-worth it depends on what a round costs the caller, which this measurement
-cannot say.
-
-The hit rate is the same as `recall`'s, because it *is* `recall`'s
-search: 91/117 on the questions with a gold answer, 30/47 on the
-reformulation chains, identical on both before and after the stop word
-list was removed.
-
-**What it deliberately does not do: write an answer.** Synthesizing one
-from several citations is a harder job than the single-word judgment
-`pruefe` asks of a language model, over a much smaller context window —
-and that judgment already needed its own measurement before it could be
-trusted (see [MEASUREMENTS.md](MEASUREMENTS.md)). `frage` leaves the
-synthesis to whichever model is calling it, the same stance `recall`
-already takes for retrying a query in another language: the caller has a
-language model, the tool doesn't need one of its own.
+Same search as `recall`, but with the top hit in full text and split memos
+merged into one citation. It went through a trial with a criterion fixed in
+advance (zero calls → remove): named in the instructions since 2026-09-25,
+it was not called once in 14 sessions with 35 searches, and measured over 275
+real questions it cost +10 % characters against `recall` → `zeige`. Its
+description, 2,570 characters, was paid in every session regardless. The
+source is in the git history, the measurements in `messung/`.
 
 ## `themen(marke="", limit=40)`
 

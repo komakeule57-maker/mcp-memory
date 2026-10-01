@@ -11,7 +11,11 @@ Zwei Verfahren, beide beim Speichern angewandt und bei der Suche gespiegelt:
 
 Messwerte an 34 echten Memo-Dateien (728 Absaetze, je 60 belegte Testfaelle):
 exakt allein 0/60 Beugung und 0/60 Komposita, mit diesen beiden Spalten
-27/60 bzw. 32/60 - ohne Treffer bei echten Fragen zu verlieren.
+27/60 bzw. 32/60 - ohne Treffer bei echten Fragen zu verlieren. Die 32/60
+sind MIT dem Selbsttreffer-Fehler in `zerlege` gemessen (bis 2026-09-29
+wurden Komposita mit 11-12 Buchstaben nie zerlegt) und nicht nachgemessen.
+Nach dem Fix auf 260 echten Fragen: R@8 80,4 -> 81,2 %, also Gleichstand -
+gebaut als Fehlerbehebung, nicht als Gewinn.
 """
 
 import re
@@ -69,7 +73,13 @@ def zerlege(wort: str, vokabular: set, tiefe: int = 3) -> list:
         return []
 
     def rek(rest, tief):
-        if rest in vokabular and len(rest) >= MIN_TEIL:
+        # Erst ab der zweiten Ebene darf `rest` als Ganzes ein Treffer sein.
+        # Auf der obersten ist `rest` das Wort selbst, und das steht immer im
+        # Woerterbuch - `_ableitungen` nimmt den eigenen Wortschatz dazu, bis
+        # MAX_TEIL. Bis 2026-09-29 kam deshalb `[wort]` zurueck und wurde als
+        # "nicht zerlegbar" verworfen: kein Kompositum mit 11-12 Buchstaben
+        # ("Ablaufdatum") wurde je zerlegt (messung/zerlegung_selbsttreffer.py).
+        if tief < tiefe and rest in vokabular and len(rest) >= MIN_TEIL:
             return [rest]
         if tief == 0:
             return None

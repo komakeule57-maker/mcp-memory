@@ -251,6 +251,17 @@ def test_woerterbuch_waechst_beim_speichern_mit():
     assert all(5 <= len(w) <= 12 and w.isalpha() for w in drin), sorted(drin)
 
 
+def test_kompositum_zerfaellt_auch_wenn_es_selbst_im_woerterbuch_steht():
+    """Der eigene Wortschatz eines Eintrags steht immer im Woerterbuch. Bis
+    2026-09-29 fand `zerlege` deshalb auf oberster Ebene das Wort selbst und
+    verwarf es als unzerlegbar: "Ablaufdatum" (11 Buchstaben) bekam nie ein
+    "datum" - die ganze Laengenklasse 11-12 fiel so aus."""
+    from morphologie import zerlege
+    assert zerlege("Sonnenschein", {"sonnen", "schein", "sonnenschein"}) == ["sonnen", "schein"]
+    text = "Das Ablaufdatum beachten"
+    assert "datum" in teile_spalte(text, wortschatz(text) | {"ablauf", "datum"}).split()
+
+
 def test_unterstrich_trennt_fuers_woerterbuch():
     """`\\w` schliesst den Unterstrich ein - `profil_validierung` bliebe damit
     EIN Wort, scheiterte an isalpha() und fiele ganz aus dem Woerterbuch.
@@ -390,70 +401,11 @@ def test_fortsetzung_erkennt_fuehrende_auszeichnung():
     assert not ms._setzt_fort("Der Eintrag faengt sauber an")
 
 
-# --------------------------------------------------------------------------
-# frage()
-# --------------------------------------------------------------------------
-def test_frage_traegt_eine_ganze_frage_durch_die_kaskade():
-    """Die Frage geht unveraendert an `_kaskade` - ohne Stoppwortliste davor.
-    Dass sie trotzdem traegt, liegt an der ODER-Stufe: kein Eintrag enthaelt
-    alle Woerter der Frage, die Kaskade faellt also zurueck (gemessen: eine
-    Stoppwortliste aenderte an 117 + 47 echten Fragen null Faelle)."""
-    ms.remember("SnAI nutzt LoRA statt eines vollen Finetunes, weil das VRAM spart.",
-                tags="snai", art="entscheidung")
-    ergebnis = ms.frage("Warum nutzt SnAI lieber LoRA als ein volles Finetune?")
-    assert "VRAM spart" in ergebnis, ergebnis
-
-
-def test_frage_loest_kette_zu_einem_zitat_auf():
-    """Ein Treffer, der nur ein Stueck einer zerschnittenen Notiz ist, muss als
-    EIN zusammenhaengendes Zitat zurueckkommen - sonst bekommt der Aufrufer
-    einen Satz ohne Anfang und weiss nicht einmal, dass mehr da ist."""
-    ms.remember("Turing-Display: Helligkeit wird ueber PWM auf Pin 5 gesteuert",
-                tags="turing35-display", art="schnittstelle")
-    ms.remember("und braucht nach dem Aufwachen aus dem Standby eine kurze Pause,",
-                tags="turing35-display", art="schnittstelle")
-    ms.remember("sonst flackert das Panel beim ersten Bild.",
-                tags="turing35-display", art="schnittstelle")
-    conn = ms._connect()
-    assert ms._ketten_nachtragen(conn) == 3
-    conn.close()
-    ergebnis = ms.frage("Wieso flackert das Display beim Aufwachen aus dem Standby?")
-    assert "#1-#3" in ergebnis, ergebnis
-    assert "PWM auf Pin 5" in ergebnis and "flackert das Panel" in ergebnis, ergebnis
-    assert ergebnis.count("PWM auf Pin 5") == 1, "Kette darf nicht doppelt zitiert werden"
-
-
-def test_frage_gibt_nur_die_spitze_im_volltext():
-    """Alles im Volltext zurueckzugeben kostete gemessen 98 % mehr Zeichen als
-    `recall` + gezieltes `zeige` - es wirft die Vorschau weg, das gemessen
-    beste Stueck des Servers. Die Trefferquote haengt nicht an der Zahl der
-    Volltexte (91/117 bei jedem Wert), nur Zeichen und Runden haengen daran;
-    k=1 ist der einzige Wert, der die Grundlinie auf beiden schlaegt."""
-    # Laenger als die Vorschaubreite von 120 Zeichen, sonst zeigt die Vorschau
-    # den ganzen Eintrag und der Test misst nichts.
-    for n in range(5):
-        ms.remember(f"Panel Nummer {n} flackert beim Aufwachen aus dem Standby. "
-                    + "Das Panel haengt am selben Strang wie die Hintergrund"
-                    "beleuchtung und zieht beim Anlauf kurz die Spannung weg. "
-                    f"SCHLUSSWORT{n}",
-                    tags="turing35-display", art="fallstrick")
-    aus = ms.frage("Warum flackert das Panel?", limit=5)
-    # Nur die Spitze traegt ihr Textende, der Rest ist an der Breite gekappt.
-    # Die Konstante steht bewusst nicht fest im Test - sie ist ein gemessener
-    # Arbeitspunkt und darf sich aendern, ohne dass der Test luegt.
-    volltexte = sum(f"SCHLUSSWORT{n}" in aus for n in range(5))
-    assert volltexte == ms.FRAGE_VOLLTEXT, \
-        f"{volltexte} Volltexte statt {ms.FRAGE_VOLLTEXT}:\n{aus}"
-    assert "weitere als Vorschau" in aus, aus
-    assert 'zeige("' in aus, aus
-    # Und billiger als alles im Volltext muss es sein - das ist der Sinn.
-    assert len(aus) < len(ms.zeige("1,2,3,4,5")), aus
-
-
-def test_frage_zaehlt_zwei_glieder_einer_kette_als_einen_beleg():
-    """Zwei Treffer aus demselben zerschnittenen Memo sind ein Beleg. Sonst
-    fuellt eine einzige Kette die Volltextplaetze und verdraengt den zweiten,
-    unabhaengigen Treffer."""
+def test_recall_gibt_einer_kette_nur_einen_platz():
+    """Zwei Treffer aus demselben zerschnittenen Memo belegen EINEN Platz
+    (#2257); der Vermerk an der verbliebenen Zeile nennt die ganze Spanne.
+    Bis 2026-10-01 pruefte das nur ein Test von `frage()` - mit dem Werkzeug
+    waere auch die einzige Deckung der Entdoppelung gegangen."""
     ms.remember("Das Display braucht nach dem Standby eine Pause von 20 ms (z.B",
                 tags="turing35-display", art="fallstrick")
     ms.remember("gemessen am Pruefstand), sonst flackert das Panel beim ersten Bild.",
@@ -463,17 +415,11 @@ def test_frage_zaehlt_zwei_glieder_einer_kette_als_einen_beleg():
     conn = ms._connect()
     assert ms._ketten_nachtragen(conn) == 2
     conn.close()
-    aus = ms.frage("Warum flackert das Panel?", limit=5)
-    # Die Kette #1-#2 als eine Belegstelle, der unabhaengige #3 als zweite.
-    assert "#1-#2" in aus, aus
+    # Kein Eintrag enthaelt beide Woerter - die ODER-Stufe trifft alle drei.
+    aus = ms.recall("Display Panel", limit=5)
     assert aus.count("[fallstrick]") == 1, aus
+    assert "zerschnittenes Memo #1-#2" in aus, aus
     assert "voellig anderer Eintrag" in aus, aus
-
-
-def test_frage_ohne_treffer_nennt_die_frage():
-    ergebnis = ms.frage("Warum ist der Himmel blau?")
-    assert "Keine Belegstellen" in ergebnis, ergebnis
-    assert "Himmel blau" in ergebnis, ergebnis
 
 
 # --------------------------------------------------------------------------
