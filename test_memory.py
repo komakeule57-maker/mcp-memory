@@ -1028,6 +1028,109 @@ def test_ein_entrumpeltes_schema_nimmt_die_argumente_weiter_an():
     assert "Ankerkette" in str(aus)
 
 
+# --------------------------------------------------------------------------
+# Gastbetrieb: eine Sitzung von einem anderen Rechner liest mit
+# --------------------------------------------------------------------------
+@contextlib.contextmanager
+def _als_gast():
+    ms.GAST = True
+    try:
+        yield
+    finally:
+        ms.GAST = False
+
+
+def _zaehle(tabelle: str) -> int:
+    conn = sqlite3.connect(ms.DB_PATH)
+    try:
+        return conn.execute(f"SELECT count(*) FROM {tabelle}").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_gast_liest_und_hinterlaesst_nichts():
+    """Auch die Suche schreibt: `recall` -> `zeige` legt ein Paar in `nachfrage`.
+    Deshalb zuerst die Gegenprobe im Hausbetrieb - ohne sie koennte dieser Test
+    nicht scheitern."""
+    ms.remember("Das Ruderblatt sitzt fest", tags="schiff", art="fallstrick")
+    ms.recall("Ruderblatt")
+    ms.zeige("1")
+    davor = _zaehle("nachfrage")
+    assert davor > 0, "Gegenprobe: im Hausbetrieb muss das Paar gemerkt werden"
+    with _als_gast():
+        aus = ms.recall("Ruderblatt fest")
+        assert f"{ms.NAME}#1 [" in aus, aus
+        assert "Ruderblatt" in ms.zeige(f"{ms.NAME}#1")
+    assert _zaehle("nachfrage") == davor
+    assert _zaehle("eintrag") == 1
+
+
+def test_gast_kann_nicht_schreiben():
+    """Die Garantie ist die nur lesend geoeffnete Datei, nicht die Werkzeugliste."""
+    ms.remember("Die Ankerkette ist zu kurz", tags="schiff", art="fallstrick")
+    with _als_gast():
+        assert "nichts gespeichert" in ms.remember("Neu", tags="schiff", art="fallstrick")
+        for versuch in (lambda: ms.vergessen("1"), lambda: ms.einordnen("1", "messwert")):
+            try:
+                versuch()
+            except sqlite3.OperationalError as exc:
+                assert "readonly" in str(exc), exc
+            else:
+                raise AssertionError("Schreibzugriff im Gastbetrieb ging durch")
+    assert _zaehle("eintrag") == 1 and _zaehle("veraltet") == 0
+    assert "[fallstrick]" in ms.recall("Ankerkette")
+
+
+def test_gast_bietet_die_schreibenden_werkzeuge_nicht_an():
+    import subprocess
+    aus = subprocess.run(
+        [sys.executable, "-c",
+         "import memory_server as ms; ms._gast_einrichten();"
+         "print(' '.join(sorted(t.name for t in ms.server._tool_manager.list_tools())))"],
+        capture_output=True, text=True, cwd=Path(__file__).resolve().parent,
+        env={**os.environ, "MEMORY_FC_AUS": "1"},
+    )
+    assert aus.stdout.split() == ["pruefe", "recall", "themen", "verdichten", "zeige"], (
+        aus.stdout, aus.stderr)
+
+
+def test_gast_migriert_nicht():
+    """Ein fremder Schemastand wird abgelehnt statt umgebaut."""
+    ms.remember("Die Ankerkette ist zu kurz", tags="schiff", art="fallstrick")
+    conn = sqlite3.connect(ms.DB_PATH)
+    conn.execute("UPDATE schema SET wert = '4' WHERE schluessel = 'stand'")
+    conn.commit()
+    conn.close()
+    with _als_gast():
+        try:
+            ms.recall("Ankerkette")
+        except RuntimeError as exc:
+            assert "Schemastand 4" in str(exc), exc
+        else:
+            raise AssertionError("Gast hat einen fremden Schemastand angenommen")
+
+
+def test_nummer_eines_fremden_gedaechtnisses_wird_abgewiesen():
+    """#2386: dieselbe Nummer bezeichnet auf jedem Rechner einen anderen Eintrag.
+    Der Name schuetzt nur, wenn ihn auch das Gedaechtnis prueft, dem er NICHT gilt."""
+    ms.remember("Die Ankerkette ist zu kurz", tags="schiff", art="fallstrick")
+    assert "Ankerkette" in ms.zeige(f"{ms.NAME}#1")
+    assert "Ankerkette" in ms.zeige("#1") and "Ankerkette" in ms.zeige("1")
+    for aus in (ms.zeige("anderswo#1"), ms.vergessen("anderswo#1"),
+                ms.einordnen("anderswo#1", "messwert"), ms.pruefe("anderswo#1,2"),
+                ms.remember("Neu", tags="schiff", art="fallstrick", ersetzt="anderswo#1")):
+        assert aus.startswith("Fehler") and "anderswo" in aus, aus
+    assert _zaehle("eintrag") == 1 and _zaehle("veraltet") == 0
+
+
+def test_namen_kommen_nur_vor_nummern():
+    n = ms.NAME
+    assert ms._mit_namen("#72 und (#73), #74-#75") == f"{n}#72 und ({n}#73), {n}#74-{n}#75"
+    assert ms._mit_namen("siehe [[2382]]") == f"siehe [[{n}#2382]]"
+    for bleibt in ("&#72;", "Farbe #202020", f"{n}#72", "a#72", "## Kopf", "Nr. 72"):
+        assert ms._mit_namen(bleibt) == bleibt, bleibt
+
+
 def main() -> int:
     faelle = [(n, f) for n, f in sorted(globals().items())
               if n.startswith("test_") and callable(f)]

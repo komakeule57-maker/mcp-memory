@@ -2,8 +2,11 @@
 """Lokaler MCP-Server fuer persistentes KI-Memory (SQLite + FTS5, stdio)."""
 
 import difflib
+import functools
 import math
+import os
 import re
+import socket
 import sqlite3
 import sys
 from pathlib import Path
@@ -22,6 +25,23 @@ except Exception:  # pragma: no cover - Notausgang, kein Normalfall
     faktencheck = None
 
 DB_PATH = Path(__file__).resolve().parent / "memory.db"
+
+# Wie dieses Gedaechtnis heisst. Auf mehreren Rechnern liegen mehrere
+# Gedaechtnisse, und jedes zaehlt seine Eintraege von 1 an: `#72` hier ist ein
+# anderer Eintrag als `#72` nebenan (#2386). Eine Nummer ist deshalb erst mit
+# Namen eindeutig - `werkbank#72`. Vorgabe ist der Rechnername, MEMORY_NAME
+# geht vor (zwei Gedaechtnisse auf einem Rechner, oder ein umgezogenes).
+NAME = (os.environ.get("MEMORY_NAME") or socket.gethostname()).strip().lower()
+
+# Gastbetrieb: eine Sitzung von einem ANDEREN Rechner liest hier mit, gestartet
+# als `ssh <rechner> .../python .../memory_server.py --gast`. Der Server laeuft
+# dabei auf dem Rechner, dem die Datei gehoert - die Datenbank selbst geht nie
+# uebers Netz. Drei Dinge aendern sich, siehe `_gast_einrichten`:
+#   * die Datei wird nur lesend geoeffnet (das ist die Garantie, der Rest Komfort),
+#   * die schreibenden Werkzeuge stehen gar nicht erst in der Liste,
+#   * jede ausgegebene Nummer traegt den Namen dieses Gedaechtnisses.
+GAST = False
+SCHREIBEND = ("remember", "vergessen", "einordnen")
 
 # Die Spalten des INDEX. `ts` steht nicht darin - das Datum ist zum Anzeigen
 # da, nie ein Suchwort. Bis Stand 4 war das eine Verabredung (`UNINDEXED`) in
@@ -150,6 +170,8 @@ def _connect() -> sqlite3.Connection:
     jedem Oeffnen mit. WAL dagegen haftet an der Datei und wirkt ein fuer alle
     Mal - aber ohne ihn sperrt ein Schreiber auch saemtliche Leser (#1427).
     """
+    if GAST:
+        return _connect_lesend()
     conn = sqlite3.connect(DB_PATH, timeout=SPERRFRIST)
     conn.execute("PRAGMA journal_mode = WAL")
     # Gilt JE VERBINDUNG und ist in SQLite per Vorgabe aus - ohne diese Zeile
@@ -157,6 +179,78 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     _schema_sicherstellen(conn)
     return conn
+
+
+def _connect_lesend() -> sqlite3.Connection:
+    """Die Verbindung des Gastbetriebs: `mode=ro`, kein Schema, keine Migration.
+
+    Ein Gast darf den Bestand auch nicht versehentlich umbauen. Passt der
+    Schemastand nicht zu diesem Code, wird deshalb abgelehnt statt migriert -
+    das Nachziehen ist Sache einer Sitzung auf dem Rechner selbst.
+    """
+    conn = sqlite3.connect(f"{Path(DB_PATH).resolve().as_uri()}?mode=ro", uri=True,
+                           timeout=SPERRFRIST)
+    try:
+        zeile = conn.execute("SELECT wert FROM schema WHERE schluessel = 'stand'").fetchone()
+    except sqlite3.OperationalError:
+        zeile = None
+    stand = int(zeile[0]) if zeile else 0
+    if stand != SCHEMA_STAND:
+        conn.close()
+        raise RuntimeError(
+            f"Gedaechtnis '{NAME}' steht auf Schemastand {stand}, dieser Server erwartet "
+            f"{SCHEMA_STAND}. Ein Gast migriert nicht - erst auf {NAME} selbst eine "
+            "Sitzung starten, dann wieder hier."
+        )
+    return conn
+
+
+# Eine Nummer in einer Eingabe: `72`, `#72` oder `werkbank#72`.
+_NUMMER = re.compile(r"(?:([A-Za-z][\w.-]*)#|#)?(\d+)")
+# Eine Nummer in einer Ausgabe: `#72`, aber nicht `&#72;`, nicht `a#72` und
+# nicht die schon benannte. Hoechstens fuenf Ziffern, damit eine Farbe wie
+# `#202020` keine Nummer wird; ebenso der Verweis `[[72]]`.
+_NUMMER_AUS = re.compile(r"(?<![\w#&/])#(\d{1,5})\b")
+_VERWEIS_AUS = re.compile(r"\[\[(\d{1,5})\]\]")
+
+
+def _ids(text: str) -> list:
+    """Liest Nummern aus einer Eingabe - und weist die eines FREMDEN Gedaechtnisses ab.
+
+    Ohne das naehme `vergessen("werkbank#72")` auf einem anderen Rechner
+    stillschweigend dessen eigene #72. Das gilt in beiden Betriebsarten: der
+    Name schuetzt nur, wenn ihn auch das Gedaechtnis prueft, dem er nicht gilt.
+    """
+    aus = []
+    for name, zahl in _NUMMER.findall(text or ""):
+        if name and name.lower() != NAME:
+            raise ValueError(
+                f"{name}#{zahl} gehoert zum Gedaechtnis '{name}', dieses hier heisst "
+                f"'{NAME}'. Dieselbe Nummer bezeichnet hier einen anderen Eintrag - "
+                "nichts getan."
+            )
+        aus.append(int(zahl))
+    return aus
+
+
+def _mit_namen(text: str) -> str:
+    """Setzt vor jede Nummer den Namen dieses Gedaechtnisses.
+
+    Bewusst ueber die ganze Ausgabe und nicht je Format-Stelle: so kann keine
+    vergessen werden, und die Querverweise IM Text eines Eintrags ("siehe #72")
+    meinen ja ebenfalls dieses Gedaechtnis und nicht das des Lesers.
+    """
+    text = _NUMMER_AUS.sub(lambda m: f"{NAME}#{m.group(1)}", text)
+    return _VERWEIS_AUS.sub(lambda m: f"[[{NAME}#{m.group(1)}]]", text)
+
+
+def _lesend(werkzeug):
+    """Meldet ein lesendes Werkzeug an; im Gastbetrieb traegt seine Ausgabe den Namen."""
+    @functools.wraps(werkzeug)
+    def huelle(*args, **kwargs):
+        aus = werkzeug(*args, **kwargs)
+        return _mit_namen(aus) if GAST and isinstance(aus, str) else aus
+    return server.tool()(huelle)
 
 
 def _stand(conn: sqlite3.Connection) -> int:
@@ -938,6 +1032,10 @@ def remember(text: str, tags: str = "", art: str = "", ersetzt: str = "") -> str
             "nichts gespeichert. Gehoert der Text zu mehreren, sind es mehrere Eintraege."
         )
     meine_art = gewaehlt[0] if gewaehlt else UNSORTIERT
+    try:
+        _ids(ersetzt)
+    except ValueError as exc:
+        return f"Fehler: {exc} - nichts gespeichert."
 
     conn = _connect()
     try:
@@ -1047,7 +1145,7 @@ def _veralten(conn, ids: str, durch=None, grund="") -> list:
     Abloesen die Zeile des ersten und loeschte damit genau die Herkunft, die
     die Tabelle festhalten soll (#1428).
     """
-    gewollt = [int(x) for x in re.findall(r"\d+", ids or "")]
+    gewollt = _ids(ids)
     getan = []
     for i in gewollt:
         if not conn.execute("SELECT 1 FROM eintrag WHERE id = ?", (i,)).fetchone():
@@ -1213,7 +1311,7 @@ def _dubletten(conn, text: str, ausser: int, schwelle: float = 0.55) -> list:
     return sorted(treffer, key=lambda x: -x[1])[:3]
 
 
-@server.tool()
+@_lesend
 def verdichten(marke: str = "", art: str = "alle", schwelle: float = 0.5, gruppen: int = 5) -> str:
     """Finds groups of entries that say largely the same thing.
 
@@ -1320,7 +1418,7 @@ def verdichten(marke: str = "", art: str = "alle", schwelle: float = 0.5, gruppe
     return "\n".join(aus)
 
 
-@server.tool()
+@_lesend
 def pruefe(ids: str) -> str:
     """Has a small language model judge how the named entries relate to each other.
 
@@ -1354,7 +1452,11 @@ def pruefe(ids: str) -> str:
     if faktencheck is None:
         return "Kein Faktencheck-Modul vorhanden (faktencheck.py fehlt oder ist fehlerhaft)."
     gewollt = []
-    for i in (int(x) for x in re.findall(r"\d+", ids or "")):
+    try:
+        genannt = _ids(ids)
+    except ValueError as exc:
+        return f"Fehler: {exc}"
+    for i in genannt:
         if i not in gewollt:
             gewollt.append(i)
     if len(gewollt) < 2:
@@ -1441,6 +1543,10 @@ def vergessen(ids: str, grund: str = "") -> str:
         ids: One or more entry ids, e.g. "12,34".
         grund: Why - appears later in the display of outdated entries.
     """
+    try:
+        _ids(ids)
+    except ValueError as exc:
+        return f"Fehler: {exc}"
     conn = _connect()
     try:
         getan = _veralten(conn, ids, grund=grund.strip() or "veraltet")
@@ -1452,7 +1558,7 @@ def vergessen(ids: str, grund: str = "") -> str:
     return f"Als veraltet markiert: {', '.join('#'+str(i) for i in getan)}"
 
 
-@server.tool()
+@_lesend
 def recall(
     query: str,
     limit: int = 8,
@@ -1649,7 +1755,8 @@ def _rueckkopplung_merken(conn, gefunden: dict) -> int:
     # Der Notschalter haelt auch das Sammeln an, nicht nur das Zuenden: wer ihn
     # umlegt, hat den Verdacht, dass der Speicher verdirbt - dann weiter zu
     # sammeln waere genau das Falsche.
-    if not RUECKKOPPLUNG or not offen or not gefunden:
+    # Ein Gast liest nur: seine Fragen praegen die Suche des Besitzers nicht.
+    if GAST or not RUECKKOPPLUNG or not offen or not gefunden:
         return 0
     neu = []
     for wortlaut in offen:
@@ -1874,7 +1981,7 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()),
 # --------------------------------------------------------------------------
 
 
-@server.tool()
+@_lesend
 def themen(marke: str = "", limit: int = 40) -> str:
     """Shows which projects exist - or the title index of one project.
 
@@ -1969,7 +2076,7 @@ def themen(marke: str = "", limit: int = 40) -> str:
     return "\n".join(aus)
 
 
-@server.tool()
+@_lesend
 def zeige(ids: str) -> str:
     """Returns the named entries in full text.
 
@@ -1980,7 +2087,10 @@ def zeige(ids: str) -> str:
     Args:
         ids: One or more entry ids, e.g. "376,481".
     """
-    gewollt = [int(x) for x in re.findall(r"\d+", ids or "")]
+    try:
+        gewollt = _ids(ids)
+    except ValueError as exc:
+        return f"Fehler: {exc}"
     if not gewollt:
         return "Fehler: keine Id angegeben, z.B. zeige(\"376,481\")."
 
@@ -2045,7 +2155,10 @@ def einordnen(ids: str, art: str) -> str:
             f"{', '.join(ARTEN)}, {UNSORTIERT} (nimmt die Einordnung zurueck)."
         )
     ziel = gewaehlt[0]
-    gewollt = [int(x) for x in re.findall(r"\d+", ids or "")]
+    try:
+        gewollt = _ids(ids)
+    except ValueError as exc:
+        return f"Fehler: {exc}"
     if not gewollt:
         return "Fehler: keine Id angegeben."
 
@@ -2106,7 +2219,17 @@ def _schema_entrumpeln() -> int:
     return entfernt
 
 
+def _gast_einrichten() -> None:
+    """Schaltet auf Gastbetrieb: nur lesen, und nur die lesenden Werkzeuge."""
+    global GAST
+    GAST = True
+    for name in SCHREIBEND:
+        server._tool_manager.remove_tool(name)
+
+
 _schema_entrumpeln()
 
 if __name__ == "__main__":
+    if "--gast" in sys.argv[1:]:
+        _gast_einrichten()
     server.run(transport="stdio")

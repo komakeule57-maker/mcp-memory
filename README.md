@@ -91,6 +91,33 @@ The database is created on first use as `memory.db` next to the script.
 document.** `recall` returns whole entries — store a 180 KB file as a
 single entry and you get it back as a single hit, having gained nothing.
 
+### Reading another machine's memory
+
+Each machine keeps its own memory, and each numbers its entries from 1. A
+session on machine A can read the memory of machine B over SSH — the server
+runs on B, next to its file; the database itself never crosses the network:
+
+```
+claude mcp add memory-b -s project -- \
+    ssh b /path/to/mcp-memory/.venv/bin/python \
+          /path/to/mcp-memory/memory_server.py --gast
+```
+
+`--gast` (guest) means three things:
+
+- **Read-only.** The file is opened with `mode=ro`, and `remember`,
+  `vergessen` and `einordnen` are not offered at all. A guest's searches do
+  not feed the owner's search feedback either, and a guest never migrates
+  the schema.
+- **Every id carries the memory's name:** `b#72`, not `#72`. The name is the
+  host name in lower case; `MEMORY_NAME` overrides it.
+- **A named id is checked, in both modes.** `zeige("b#72")` asked of any
+  memory other than `b` is refused instead of quietly returning that
+  memory's own #72. Bare ids (`72`, `#72`) mean the memory being asked.
+
+`-s project` keeps the five extra tool definitions out of sessions that do
+not need them. The tools are then called `mcp__memory-b__recall` and so on.
+
 ## The Eight Tools
 
 | | |
