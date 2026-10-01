@@ -1081,8 +1081,12 @@ def test_gast_kann_nicht_schreiben():
     assert "[fallstrick]" in ms.recall("Ankerkette")
 
 
-def test_gast_bietet_die_schreibenden_werkzeuge_nicht_an():
+def test_gast_sieht_nur_suchen_lesen_blaettern():
+    """Und der Hausbetrieb behaelt alle acht - die Kuerzung gilt nur dem Gast."""
     import subprocess
+    haus = {w.name for w in ms.server._tool_manager.list_tools()}
+    assert {"remember", "vergessen", "einordnen", "verdichten", "pruefe"} <= haus, haus
+    assert len(haus) == 8, haus
     aus = subprocess.run(
         [sys.executable, "-c",
          "import memory_server as ms; ms._gast_einrichten();"
@@ -1090,7 +1094,7 @@ def test_gast_bietet_die_schreibenden_werkzeuge_nicht_an():
         capture_output=True, text=True, cwd=Path(__file__).resolve().parent,
         env={**os.environ, "MEMORY_FC_AUS": "1"},
     )
-    assert aus.stdout.split() == ["pruefe", "recall", "themen", "verdichten", "zeige"], (
+    assert aus.stdout.split() == ["recall", "themen", "zeige"], (
         aus.stdout, aus.stderr)
 
 

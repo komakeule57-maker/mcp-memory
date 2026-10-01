@@ -105,8 +105,9 @@ claude mcp add memory-b -s project -- \
 
 `--gast` (guest) means three things:
 
-- **Read-only.** The file is opened with `mode=ro`, and `remember`,
-  `vergessen` and `einordnen` are not offered at all. A guest's searches do
+- **Read-only.** The file is opened with `mode=ro`, and only `recall`,
+  `zeige` and `themen` are offered. The writing tools are gone, and so are
+  `verdichten` and `pruefe`: upkeep belongs to the owner, who can act on it. A guest's searches do
   not feed the owner's search feedback either, and a guest never migrates
   the schema.
 - **Every id carries the memory's name:** `b#72`, not `#72`. The name is the
@@ -115,7 +116,7 @@ claude mcp add memory-b -s project -- \
   memory other than `b` is refused instead of quietly returning that
   memory's own #72. Bare ids (`72`, `#72`) mean the memory being asked.
 
-`-s project` keeps the five extra tool definitions out of sessions that do
+`-s project` keeps the three extra tool definitions out of sessions that do
 not need them. The tools are then called `mcp__memory-b__recall` and so on.
 
 ## The Eight Tools

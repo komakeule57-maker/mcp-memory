@@ -38,10 +38,15 @@ NAME = (os.environ.get("MEMORY_NAME") or socket.gethostname()).strip().lower()
 # dabei auf dem Rechner, dem die Datei gehoert - die Datenbank selbst geht nie
 # uebers Netz. Drei Dinge aendern sich, siehe `_gast_einrichten`:
 #   * die Datei wird nur lesend geoeffnet (das ist die Garantie, der Rest Komfort),
-#   * die schreibenden Werkzeuge stehen gar nicht erst in der Liste,
+#   * angeboten wird nur, was ein Gast braucht (siehe GASTWERKZEUGE),
 #   * jede ausgegebene Nummer traegt den Namen dieses Gedaechtnisses.
 GAST = False
-SCHREIBEND = ("remember", "vergessen", "einordnen")
+# Was ein Gast sieht: suchen, lesen, blaettern. Eine Positivliste, damit ein
+# neues Werkzeug nicht von selbst bei den Gaesten landet. `verdichten` und
+# `pruefe` lesen zwar auch nur, sind aber Pflegewerkzeuge - wer Dubletten
+# findet, muss sie abloesen koennen, und das kann nur der Besitzer. Sie kosteten
+# den Gast 3.014 von 6.635 Zeichen Werkzeugbeschreibung, in jeder Sitzung.
+GASTWERKZEUGE = ("recall", "zeige", "themen")
 
 # Die Spalten des INDEX. `ts` steht nicht darin - das Datum ist zum Anzeigen
 # da, nie ein Suchwort. Bis Stand 4 war das eine Verabredung (`UNINDEXED`) in
@@ -2220,11 +2225,12 @@ def _schema_entrumpeln() -> int:
 
 
 def _gast_einrichten() -> None:
-    """Schaltet auf Gastbetrieb: nur lesen, und nur die lesenden Werkzeuge."""
+    """Schaltet auf Gastbetrieb: nur lesen, und nur die Werkzeuge fuer Gaeste."""
     global GAST
     GAST = True
-    for name in SCHREIBEND:
-        server._tool_manager.remove_tool(name)
+    for werkzeug in list(server._tool_manager.list_tools()):
+        if werkzeug.name not in GASTWERKZEUGE:
+            server._tool_manager.remove_tool(werkzeug.name)
 
 
 _schema_entrumpeln()
