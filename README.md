@@ -185,7 +185,7 @@ published, and getting thinner.
 | [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md) | what was measured, and the known limitations |
 | [docs/FACTCHECK.md](docs/FACTCHECK.md) | the opt-in fact check: setup, what it can and cannot do |
 | [docs/IMPORT.md](docs/IMPORT.md) | importing an existing folder of notes, and the damage that did |
-| [`messung/`](messung/) | the four underlying measurement reports (German) |
+| [`messung/`](messung/) | the seven underlying measurement reports (German) |
 
 ## A Note on Language
 
@@ -217,7 +217,7 @@ output, glossed in English where it first appears.
 | `requirements.txt` | just `mcp` |
 | `memory.db` | the database — created on first use, never committed |
 
-`messung/` keeps the four measurement **reports**. The scripts that
+`messung/` keeps the seven measurement **reports**. The scripts that
 produced them and their raw data are not included: they only run against
 the author's own dataset, and the raw data is a verbatim transcript of
 real working sessions.
