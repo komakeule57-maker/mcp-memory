@@ -83,6 +83,155 @@ def test_themen_nennt_bei_unbekannter_marke_die_naheliegenden():
     assert "Keine Eintraege" in ms.themen("gibtesnicht")
 
 
+def _nummern(ausgabe: str) -> list:
+    """Die Ids am Zeilenanfang einer Ausgabe, in der Reihenfolge der Ausgabe."""
+    return [int(n) for n in re.findall(r"^\s*#(\d+)", ausgabe, re.M)]
+
+
+def test_themen_zeigt_eine_seite_und_nennt_den_weg_zum_rest():
+    """2026-10-04: "alles zu <Projekt>" lieferte den Titelindex von 351
+    Eintraegen, bis zu 40 je Art - 26.506 Zeichen, bevor ein einziger Eintrag
+    gelesen war. Vorgabe ist jetzt eine Seite mit den juengsten; der Rest wird
+    gezaehlt und der Aufruf genannt, der ihn holt."""
+    for n in range(1, 36):
+        ms.remember(f"Bojennummer {n} liegt im Fahrwasser Abschnitt {n}",
+                    tags="hafen-project", art="fallstrick" if n % 2 else "schnittstelle")
+    erste = ms.themen("hafen-project")
+    assert _nummern(erste) == list(range(35, 5, -1)), _nummern(erste)
+    assert "35 Eintraege" in erste and "schnittstelle 17, fallstrick 18" in erste, erste
+    assert '5 aeltere nicht gezeigt - themen("hafen-project", seite=2)' in erste, erste
+    zweite = ms.themen("hafen-project", seite=2)
+    assert _nummern(zweite) == [5, 4, 3, 2, 1], zweite
+    assert "nicht gezeigt" not in zweite, zweite
+    assert "gibt es nicht" in ms.themen("hafen-project", seite=3)
+    # alle=True: der ganze Index, nach Art gruppiert, nichts gedeckelt.
+    ganz = ms.themen("hafen-project", alle=True)
+    assert sorted(_nummern(ganz)) == list(range(1, 36)), _nummern(ganz)
+    assert "fallstrick (18):" in ganz and "nicht gezeigt" not in ganz, ganz
+    # limit= bleibt die Seitengroesse.
+    assert _nummern(ms.themen("hafen-project", limit=10, seite=4)) == [5, 4, 3, 2, 1]
+    # Ein kleines Projekt passt auf eine Seite und bekommt keinen Blaetterhinweis.
+    ms.remember("Die Mole ist 40 Meter lang", tags="mole-project", art="messwert")
+    klein = ms.themen("mole-project")
+    assert "Seite" not in klein and "nicht gezeigt" not in klein, klein
+
+
+def test_zeige_deckelt_den_aufruf_und_nennt_was_fehlt():
+    """2026-10-04: 16 Volltexte in einem Aufruf kosteten im Median 24.595
+    Zeichen. Lang war dabei kein einzelner Eintrag - teuer war die Anzahl.
+    Der Deckel gilt deshalb je Aufruf, und was nicht hineinpasst, steht als
+    Titelzeile samt fertigem Folgeaufruf da."""
+    for n in range(1, 6):
+        ms.remember(f"Leuchtfeuer {n}: " + f"Kennung{n} blinkt. " * 150,
+                    tags="hafen-project", art="schnittstelle")
+    aus = ms.zeige("5,4,3,2,1")
+    kopf, _, rest = aus.partition("weitere verlangt, nicht gezeigt")
+    assert rest, aus
+    gezeigt = _nummern(kopf)
+    assert gezeigt and gezeigt == [5, 4, 3, 2, 1][:len(gezeigt)] and len(gezeigt) < 5, gezeigt
+    offen = [5, 4, 3, 2, 1][len(gezeigt):]
+    assert f'zeige("{",".join(map(str, offen))}")' in rest, rest
+    assert _nummern(rest) == offen, rest
+    # Gezeigtes steht ganz da, Aufgeschobenes nur als Titelzeile.
+    assert kopf.count("blinkt.") == 150 * len(gezeigt), kopf.count("blinkt.")
+    assert rest.count("blinkt.") < 10 * len(offen), rest
+    assert len(aus) < ms.DECKEL_ZEIGE + 1500, len(aus)
+    # Der genannte Folgeaufruf fuehrt bis ans Ende, ohne etwas zu verlieren.
+    gesehen, runden = list(gezeigt), 0
+    while offen:
+        folge = ms.zeige(",".join(map(str, offen)))
+        kopf, _, rest = folge.partition("weitere verlangt, nicht gezeigt")
+        gesehen += _nummern(kopf)
+        offen = _nummern(rest)
+        runden += 1
+        assert runden < 6, "Fortsetzung kommt nicht ans Ende"
+    assert gesehen == [5, 4, 3, 2, 1], gesehen
+    # voll=True: alles auf einmal.
+    ganz = ms.zeige("5,4,3,2,1", voll=True)
+    assert ganz.count("blinkt.") == 750 and "nicht gezeigt" not in ganz
+    # Unter dem Deckel aendert sich nichts.
+    assert "nicht gezeigt" not in ms.zeige("1,2") and ms.zeige("1,2").count("blinkt.") == 300
+
+
+def test_zeige_kuerzt_einen_ueberlangen_eintrag_nur_mit_ansage():
+    """Der einzige Fall, in dem mitten im Text Schluss ist: ein Eintrag, der
+    allein ueber dem Deckel liegt. Dann an einer Zeilengrenze, mit Zahlen und
+    dem Aufruf, der den Rest holt - nie stumm."""
+    lang = "\n".join(f"Zeile {n}: der Pegel steht bei {n} Zentimetern" for n in range(250))
+    assert len(lang) > ms.DECKEL_ZEIGE
+    ms.remember(lang, tags="hafen-project", art="messwert")
+    aus = ms.zeige("1")
+    assert f"von {len(lang)} Zeichen gezeigt" in aus and 'zeige("1", voll=True)' in aus, aus[-300:]
+    assert "Zeile 0:" in aus and "Zeile 249:" not in aus
+    assert len(aus) < ms.DECKEL_ZEIGE + 300, len(aus)
+    assert "Zeile 249:" in ms.zeige("1", voll=True)
+    assert "gekuerzt" not in ms.zeige("1", voll=True)
+
+
+def test_zeige_trennt_die_stuecke_einer_kette_nicht():
+    """CLAUDE.md verlangt, ein zerschnittenes Memo erst GANZ zu lesen. Ein
+    Deckel, der zwischen Stueck 1 und 2 faellt, lieferte genau das Bruchstueck,
+    vor dem der Vermerk warnt. Eine Kette ist deshalb eine Einheit: ganz
+    gezeigt oder ganz aufgeschoben, und nie gekappt."""
+    fuell = "Die Tonne schwojt im Strom und zerrt an der Kette, " * 30
+    ms.remember("Das Namensschema ist fest, " + fuell + "gilt fuer den Rest (z.B",
+                tags="schiff", art="schnittstelle")
+    ms.remember("raumschiff_alpha_0-2.apk), " + fuell + "gebumpt in tools/build.sh.",
+                tags="schiff", art="schnittstelle")
+    ms.remember("Ankerplatz: " + "Der Grund ist Schlick und haelt schlecht. " * 110,
+                tags="schiff", art="fallstrick")
+    conn = ms._connect()
+    assert ms._ketten_nachtragen(conn) == 2
+    conn.close()
+    # Die Kette passt nach dem langen Eintrag nicht mehr: BEIDE Stuecke warten.
+    aus = ms.zeige("3,1,2")
+    kopf, _, rest = aus.partition("weitere verlangt, nicht gezeigt")
+    assert _nummern(kopf) == [3] and _nummern(rest) == [1, 2], aus[-600:]
+    assert 'zeige("1,2")' in rest and "Stueck 2 von 2" in rest, rest
+    # Die Stuecke ruecken zusammen, auch wenn etwas dazwischen verlangt war.
+    aus = ms.zeige("1,3,2")
+    kopf, _, rest = aus.partition("weitere verlangt, nicht gezeigt")
+    assert _nummern(kopf) == [1, 2] and _nummern(rest) == [3], aus[-600:]
+    assert "gebumpt in tools/build.sh" in kopf
+    # Eine Kette ueber dem Deckel kommt trotzdem ganz - gekappt wird sie nie.
+    alt = ms.DECKEL_ZEIGE
+    ms.DECKEL_ZEIGE = 1000
+    try:
+        aus = ms.zeige("1,2")
+        assert "gebumpt in tools/build.sh" in aus and "gekuerzt" not in aus, aus[-300:]
+        assert "nicht gezeigt" not in aus
+    finally:
+        ms.DECKEL_ZEIGE = alt
+
+
+def test_recall_nennt_den_besseren_treffer_ausserhalb_der_marke():
+    """2026-10-04: 40 Fragen nach allgemeinem Wissen, gestellt mit einer
+    Projektmarke - 0 von 880 gefunden, ohne Marke 37 von 40. Der Filter ist
+    hart, und in 83 % der Faelle kam statt "Keine Treffer" der ODER-Rueckfall:
+    eine volle Liste aus dem Projekt, die wie ein Ergebnis aussieht.
+    Der blosse Rat an dieser Stelle war gemessen wertlos (93 % Fehlalarm bei
+    Projektfragen); geraten wird deshalb nur, wenn der beste Treffer ohne
+    Marke wirklich draussen liegt, und der wird genannt."""
+    ms.remember("Die Schleuse oeffnet nur bei Hochwasser", tags="hafen-project", art="fallstrick")
+    ms.remember("Der Kran hebt zwanzig Tonnen", tags="hafen-project", art="messwert")
+    ms.remember("Die Shell bricht bei Umlauten im Pfad ab, also Pfade quoten",
+                tags="shell-fallen", art="fallstrick")
+    # Allgemeine Frage in der Projektsitzung: ein Wort trifft im Projekt, alle nirgends.
+    aus = ms.recall("Schleuse Umlaute Pfad quoten", marke="hafen-project")
+    assert "(ODER" in aus and "Hochwasser" in aus, aus
+    letzte = aus.splitlines()[-1]
+    assert letzte.startswith("Ausserhalb von hafen-project passt besser: #3 "), aus
+    assert "ohne marke= noch einmal probieren" in letzte, aus
+    # Der Treffer von draussen steht NUR in der Ratszeile, nicht in der Liste.
+    assert aus.count("#3 ") == 1, aus
+    # Kein Fehlalarm: ODER-Rueckfall, aber der beste Treffer liegt im Projekt.
+    still = ms.recall("Schleuse Hochwasser Gezeiten Pegel", marke="hafen-project")
+    assert "(ODER" in still and "Ausserhalb" not in still, still
+    # Und keiner ohne Marke oder bei einem Treffer, der alle Begriffe enthaelt.
+    assert "Ausserhalb" not in ms.recall("Schleuse Umlaute Pfad quoten")
+    assert "Ausserhalb" not in ms.recall("Schleuse Hochwasser", marke="hafen-project")
+
+
 def test_chronik_faellt_aus_der_vorgabeansicht_wird_aber_gemeldet():
     """Stilles Ausblenden waere schlimmer als Rauschen: man merkt sonst nie,
     dass der gute Treffer in der Chronik liegt."""

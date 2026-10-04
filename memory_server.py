@@ -93,6 +93,21 @@ DECKEL_OFFEN = 8
 # das hier ab und raeumt `nachfrage` auf, statt die Suche zu beschuldigen.
 RUECKKOPPLUNG = True
 
+# Deckel der beiden Werkzeuge, die bis 2026-10-04 lieferten, was verlangt war,
+# gleich wie viel. Anlass: "alles zu <Projekt>" kostete 26.506 Zeichen
+# Titelindex (351 Eintraege, bis zu 40 je Art) und danach 16 Volltexte mit im
+# Median 24.595 Zeichen (messung/deckel_themen_zeige.py).
+# Beide deckeln sichtbar: was fehlt, wird gezaehlt und der Aufruf genannt,
+# der es holt. Still abgeschnitten wird nichts.
+#
+# Titelzeilen je Seite im Titelindex eines Projekts, juengste zuerst.
+DECKEL_THEMEN = 30
+# Zeichen Volltext je `zeige`-Aufruf. NICHT je Eintrag: lang ist fast keiner
+# (5 von 1907 ueber 4000 Zeichen, der laengste 6201), teuer wird der Aufruf
+# durch die Anzahl. Die Zahl liegt ueber dem laengsten zerschnittenen Memo
+# (4609 Zeichen), damit eine Kette fuer sich immer in einen Aufruf passt.
+DECKEL_ZEIGE = 6000
+
 # Ab so vielen eigenen Eintraegen gilt eine Marke als gesetzt und der
 # Markenwaechter schweigt. Eine Warnung, die nur beim allerersten Eintrag
 # kommt, verhindert den Zerfall gerade nicht - der zweite Tippfehler ist der,
@@ -1597,7 +1612,9 @@ def recall(
             tags separated by comma or space are OR-combined. Sub-tags are
             included: "leuchtturm" also matches "leuchtturm-project", but
             conversely "mcp-memory-server" does not match "mcp-memory".
-            themen() lists which tags exist.
+            themen() lists which tags exist. Nothing outside the tag can
+            show up in the hits; if the best match lies outside, a last
+            line names it.
         voll: Full text instead of preview (default: no).
         mit_veraltet: Also show superseded entries (default: no).
     """
@@ -1616,6 +1633,25 @@ def recall(
         rows, fehler, hinweis = _kaskade(conn, query, limit, filter_, marke)
         status = _veraltungen(conn) if mit_veraltet else {}
         ketten = _ketten_von(conn, [r[0] for r in rows])
+        # Die Marke haengt per AND an JEDER Stufe der Kaskade, auch am
+        # ODER-Rueckfall: was ausserhalb des Projekts liegt, kann unter
+        # marke= nie erscheinen. Gemessen am 2026-10-04 mit 40 Fragen nach
+        # allgemeinem Wissen gegen 22 Projektmarken: 0 von 880 gefunden (ohne
+        # Marke 37 von 40), und in 83 % der Faelle kam statt einer leeren
+        # Antwort der ODER-Rueckfall - eine volle Liste, die wie ein Ergebnis
+        # aussieht. Deshalb dort einmal ohne Marke nachsehen und den besten
+        # Treffer NENNEN, wenn er draussen liegt: das traf 726 der 880, in 614
+        # stand die gesuchte Antwort gleich in der Zeile.
+        # Verworfen: der blosse Rat bei jedem ODER-Rueckfall. Er kam bei
+        # Projektfragen mit eigener Marke in 93 % der Faelle, also so oft wie
+        # dort, wo er hingehoert (83 %) - diese Fassung in 7 bis 16 %. Und die
+        # Probe bei JEDER Suche mit Marke: 6 Punkte mehr Abdeckung fuer eine
+        # zweite Abfrage in jedem Aufruf (messung/rat_bei_marke.py).
+        draussen = None
+        if _marken(marke) and rows and not fehler and hinweis.startswith(" (ODER"):
+            beste, _, _ = _kaskade(conn, query, limit, filter_, "")
+            if beste and not _marke_trifft(beste[0][3], _marken(marke)):
+                draussen = beste[0]
         # Stilles Ausblenden waere schlimmer als das Rauschen: bei drei
         # mittelmaessigen Treffern merkt man sonst nie, dass der gute in der
         # Chronik liegt.
@@ -1656,7 +1692,12 @@ def recall(
         kopf += f", {zurueckgehalten} in der Chronik ausgeblendet (art=\"verlauf\")"
     if not voll:
         kopf += ' - Vorschau, Volltext per zeige("' + ",".join(str(r[0]) for r in rows[:2]) + '")'
-    return kopf + ":\n" + "\n".join(lines)
+    aus = kopf + ":\n" + "\n".join(lines)
+    if draussen:
+        aus += (f"\nAusserhalb von {marke.strip()} passt besser: "
+                + _zeile(*draussen, voll=False)
+                + " - ohne marke= noch einmal probieren.")
+    return aus
 
 
 def _stumm_zaehlen(conn, query: str, mit_veraltet: bool, marke: str = "") -> int:
@@ -1987,13 +2028,14 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()),
 
 
 @_lesend
-def themen(marke: str = "", limit: int = 40) -> str:
+def themen(marke: str = "", limit: int = 0, seite: int = 1, alle: bool = False) -> str:
     """Shows which projects exist - or the title index of one project.
 
     Counterpart to recall: that searches for words, this browses. Without an
     argument, the tag board (which project, how many entries, how they're
     distributed across kinds of knowledge); with an argument, that project's
-    title lines grouped by kind.
+    title lines, newest first, one page at a time - the header says how many
+    more there are and how to get them.
 
     What this is for: recall only finds what you already know to ask for.
     Someone picking a project back up after months doesn't remember the
@@ -2006,10 +2048,13 @@ def themen(marke: str = "", limit: int = 40) -> str:
 
     Args:
         marke: Project, e.g. "raumschiff-project". Empty = tag board.
-        limit: Number of rows for the board; number of entries per kind of
-            knowledge for the title index (default 40).
+        limit: Rows per page (default 40 for the board, 30 for the title index).
+        seite: Page of the title index (default 1 = the newest).
+        alle: Whole title index at once, grouped by kind. Large for a big
+            project - prefer recall(query, marke=...) when you know a term.
     """
-    limit = max(1, min(int(limit), 200))
+    limit = max(0, min(int(limit), 200))
+    seite = max(1, int(seite))
     conn = _connect()
     try:
         zeilen = conn.execute(
@@ -2026,6 +2071,7 @@ def themen(marke: str = "", limit: int = 40) -> str:
     gesucht = _marken(marke)
 
     if not gesucht:
+        limit = limit or 40
         tafel = {}
         for rid, _, _, tags, _art in zeilen:
             for m in _marken(tags):
@@ -2053,44 +2099,82 @@ def themen(marke: str = "", limit: int = 40) -> str:
     if not treffer:
         # Der haeufigste Fall ist ein Tippfehler oder eine Namensvariante,
         # nicht ein leeres Projekt - also gleich die naheliegenden nennen.
-        alle = sorted({m for _, _, _, t, _ in zeilen for m in _marken(t)})
+        alle_marken = sorted({m for _, _, _, t, _ in zeilen for m in _marken(t)})
         # Teilstring UND Aehnlichkeit: das eine faengt die Untermarke
         # ("leuchtturm" -> "leuchtturm-project"), das andere den Vertipper
         # ("leuchttur"), und keines von beiden faengt den Fall des anderen.
-        nah = {a for a in alle
+        nah = {a for a in alle_marken
                if any(g.lower() in a.lower() or a.lower() in g.lower() for g in gesucht)}
         for g in gesucht:
-            nah.update(difflib.get_close_matches(g, alle, n=4, cutoff=0.7))
+            nah.update(difflib.get_close_matches(g, alle_marken, n=4, cutoff=0.7))
         nah = sorted(nah)
         hinweis = f" Gemeint vielleicht: {', '.join(nah[:8])}?" if nah else ""
         return f"Keine Eintraege unter der Marke {marke}.{hinweis} Alle Marken: themen()."
 
-    aus = [f"{len(treffer)} Eintraege unter {', '.join(gesucht)} "
-           f'- Volltext per zeige("<id>"), suchen per recall(query, marke="{gesucht[0]}").']
-    for sorte in sorten:
-        gruppe = sorted((z for z in treffer if arten[z[0]] == sorte),
-                        key=lambda z: z[1], reverse=True)
-        if not gruppe:
-            continue
-        mehr = f", davon die {limit} juengsten" if len(gruppe) > limit else ""
-        aus.append(f"\n{sorte} ({len(gruppe)}{mehr}):")
-        for rid, ts, content, tags, _art in gruppe[:limit]:
-            weitere = [m for m in _marken(tags) if m not in gesucht]
-            dazu = f"  +{','.join(weitere)}" if weitere else ""
-            aus.append(f"  #{rid:<5} {ts[:10]}  {_titel(content, 76)}{dazu}")
+    def titelzeile(z, mit_art: bool) -> str:
+        rid, ts, content, tags, _art = z
+        weitere = [m for m in _marken(tags) if m not in gesucht]
+        dazu = f"  +{','.join(weitere)}" if weitere else ""
+        sorte = f"[{arten[rid]}] " if mit_art else ""
+        return f"  #{rid:<5} {ts[:10]}  {sorte}{_titel(content, 76)}{dazu}"
+
+    kopf = (f"{len(treffer)} Eintraege unter {', '.join(gesucht)} "
+            f'- Volltext per zeige("<id>"), suchen per recall(query, marke="{gesucht[0]}").')
+    if alle:
+        aus = [kopf]
+        for sorte in sorten:
+            gruppe = sorted((z for z in treffer if arten[z[0]] == sorte),
+                            key=lambda z: (z[1], z[0]), reverse=True)
+            if gruppe:
+                aus.append(f"\n{sorte} ({len(gruppe)}):")
+                aus.extend(titelzeile(z, mit_art=False) for z in gruppe)
+        return "\n".join(aus)
+
+    # Vorgabe: eine Seite, juengste zuerst, quer ueber die Arten. Die Verteilung
+    # auf die Arten bleibt als eine Zeile stehen - sie kostet fast nichts und
+    # sagt, ob sich `recall(..., art=...)` lohnt. Was nicht auf der Seite
+    # steht, wird gezaehlt und der Weg dorthin genannt.
+    limit = limit or DECKEL_THEMEN
+    geordnet = sorted(treffer, key=lambda z: (z[1], z[0]), reverse=True)
+    seiten = -(-len(geordnet) // limit)
+    if seite > seiten:
+        return (f"Seite {seite} gibt es nicht - {len(treffer)} Eintraege unter "
+                f"{', '.join(gesucht)} sind {seiten} Seite(n).")
+    ab = (seite - 1) * limit
+    blatt = geordnet[ab:ab + limit]
+    verteilung = ", ".join(
+        f"{sorte} {n}" for sorte in sorten
+        if (n := sum(1 for z in treffer if arten[z[0]] == sorte)))
+    aus = [kopf, f"Nach Art: {verteilung}.", ""]
+    if seiten == 1:
+        aus.append("Juengste zuerst:")
+    else:
+        aus.append(f"Seite {seite} von {seiten}, juengste zuerst "
+                   f"(Eintrag {ab + 1}-{ab + len(blatt)}):")
+    aus.extend(titelzeile(z, mit_art=True) for z in blatt)
+    rest = len(geordnet) - ab - len(blatt)
+    if rest:
+        aus.append(f'{rest} aeltere nicht gezeigt - themen("{marke.strip()}", seite={seite + 1}) '
+                   f"blaettert weiter, alle=True holt den ganzen Index.")
     return "\n".join(aus)
 
 
 @_lesend
-def zeige(ids: str) -> str:
+def zeige(ids: str, voll: bool = False) -> str:
     """Returns the named entries in full text.
 
     Counterpart to recall's preview: first see which entry is meant, then
     read only that one. Outdated entries are explicitly included here -
     whoever asks for the id means that one too, even if it's outdated.
 
+    One call returns about 6000 characters of full text, in the order asked.
+    Whatever doesn't fit comes back as a title line plus the call that
+    fetches it - nothing is dropped silently. The pieces of one cut-up memo
+    are never separated.
+
     Args:
-        ids: One or more entry ids, e.g. "376,481".
+        ids: One or more entry ids, e.g. "376,481". Most wanted first.
+        voll: Everything asked for at once, without the cap (default: no).
     """
     try:
         gewollt = _ids(ids)
@@ -2098,41 +2182,87 @@ def zeige(ids: str) -> str:
         return f"Fehler: {exc}"
     if not gewollt:
         return "Fehler: keine Id angegeben, z.B. zeige(\"376,481\")."
+    gewollt = list(dict.fromkeys(gewollt))
 
     conn = _connect()
     try:
         platz = ",".join("?" * len(gewollt))
-        gefunden = {
-            r[0]: r
-            for r in conn.execute(
-                f"SELECT e.id, e.ts, e.content, e.tags, e.art FROM eintrag e"
-                f" WHERE e.id IN ({platz})",
-                tuple(gewollt),
-            )
-        }
+        zeilen = conn.execute(
+            f"SELECT e.id, e.ts, e.content, e.tags, e.art, e.kopf FROM eintrag e"
+            f" WHERE e.id IN ({platz})",
+            tuple(gewollt),
+        ).fetchall()
+        gefunden = {r[0]: r[:5] for r in zeilen}
+        koepfe = {r[0]: r[5] for r in zeilen if r[5] is not None}
         arten = {i: z[4] for i, z in gefunden.items()}
         ketten = _ketten_von(conn, gefunden)
         status = _veraltungen(conn)
         # Hier schliesst sich das Paar: was gesucht wurde, und was daraufhin
         # geholt wurde. Ein `zeige` ohne vorangegangene Suche merkt nichts -
-        # dann hat der Aufrufer die Id schon gekannt.
+        # dann hat der Aufrufer die Id schon gekannt. Gemerkt wird alles
+        # Verlangte, auch was der Deckel auf den naechsten Aufruf schiebt:
+        # die Absicht steht in der Anfrage, nicht in der Seitengrenze.
         _rueckkopplung_merken(conn, gefunden)
     finally:
         conn.close()
 
-    aus = []
-    for i in gewollt:
-        if i not in gefunden:
-            aus.append(f"#{i} - kein solcher Eintrag.")
-            continue
-        rid, ts, content, tags, _art = gefunden[i]
-        vermerk = ""
+    def vermerk(rid) -> str:
+        text = ""
         if rid in status:
             durch, grund = status[rid]
-            vermerk = f" [VERALTET: {grund}" + (f", ersetzt durch #{durch}" if durch else "") + "]"
-        vermerk += ketten.get(rid, "")
-        aus.append(_zeile(rid, ts, content, tags, arten[rid], voll=True, vermerk=vermerk))
-    return "\n\n".join(aus)
+            text = f" [VERALTET: {grund}" + (f", ersetzt durch #{durch}" if durch else "") + "]"
+        return text + ketten.get(rid, "")
+
+    # Einheiten in der verlangten Reihenfolge. Die Stuecke EINES zerschnittenen
+    # Memos bilden eine Einheit an der Stelle des ersten: der Zusammenhang
+    # liegt in der Kette, nicht im Stueck, und ein Deckel mitten hindurch
+    # lieferte genau das Bruchstueck, vor dem der Vermerk warnt.
+    einheiten, platz_der_kette = [], {}
+    for i in gewollt:
+        kopf = koepfe.get(i)
+        if kopf is not None and kopf in platz_der_kette:
+            einheiten[platz_der_kette[kopf]].append(i)
+            continue
+        if kopf is not None:
+            platz_der_kette[kopf] = len(einheiten)
+        einheiten.append([i])
+
+    def umfang(einheit) -> int:
+        return sum(len(gefunden[i][2]) for i in einheit if i in gefunden)
+
+    aus, verbraucht, offen = [], 0, []
+    for nr, einheit in enumerate(einheiten):
+        gross = umfang(einheit)
+        if not voll and aus and verbraucht + gross > DECKEL_ZEIGE:
+            offen = [i for e in einheiten[nr:] for i in e]
+            break
+        verbraucht += gross
+        for i in einheit:
+            if i not in gefunden:
+                aus.append(f"#{i} - kein solcher Eintrag.")
+                continue
+            rid, ts, content, tags, _art = gefunden[i]
+            # Ein einzelner Eintrag ueber dem Deckel ist der einzige Fall, in
+            # dem mitten im Text Schluss ist - an einer Zeilengrenze und mit
+            # der Zahl, die fehlt. Eine Kette wird auch dann nicht gekappt.
+            if not voll and len(einheit) == 1 and len(content) > DECKEL_ZEIGE:
+                schnitt = content.rfind("\n", 0, DECKEL_ZEIGE)
+                schnitt = schnitt if schnitt > DECKEL_ZEIGE // 2 else DECKEL_ZEIGE
+                content = (content[:schnitt].rstrip()
+                           + f"\n[... gekuerzt: {schnitt} von {len(content)} Zeichen gezeigt"
+                           f' - ganz per zeige("{rid}", voll=True)]')
+            aus.append(_zeile(rid, ts, content, tags, arten[rid], voll=True, vermerk=vermerk(rid)))
+    text = "\n\n".join(aus)
+    if not offen:
+        return text
+    fehlt = [i for i in offen if i not in gefunden]
+    da = [i for i in offen if i in gefunden]
+    kopf = (f"{len(offen)} weitere verlangt, nicht gezeigt (Deckel {DECKEL_ZEIGE} Zeichen"
+            f' je Aufruf) - weiter mit zeige("{",".join(map(str, offen))}"),'
+            " alles auf einmal mit voll=True:")
+    rest = [_zeile(*gefunden[i][:4], arten[i], voll=False, vermerk=vermerk(i)) for i in da]
+    rest += [f"#{i} - kein solcher Eintrag." for i in fehlt]
+    return text + "\n\n" + kopf + "\n" + "\n".join(rest)
 
 
 @server.tool()

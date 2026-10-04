@@ -125,8 +125,8 @@ not need them. The tools are then called `mcp__memory-b__recall` and so on.
 |---|---|
 | `remember(text, tags, art, ersetzt)` | store an entry; reports similar existing ones and what it would supersede |
 | `recall(query, limit, art, marke, …)` | ranked full-text search, preview by default |
-| `zeige(ids)` | full text of specific entries |
-| `themen(marke, limit)` | browse: which projects exist, or one project's title lines |
+| `zeige(ids, voll)` | full text of specific entries, about 6000 characters per call; what doesn't fit is listed with the call that fetches it |
+| `themen(marke, limit, seite, alle)` | browse: which projects exist, or one project's title lines, newest first, a page at a time |
 | `vergessen(ids, grund)` | mark as outdated — never deletes |
 | `einordnen(ids, art)` | assign the knowledge kind of existing entries |
 | `verdichten(marke, art, …)` | find groups of entries that say much the same thing |
