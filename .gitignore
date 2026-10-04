@@ -1,6 +1,6 @@
 # Die Datenbank ist der Bestand, nicht der Quelltext: 4 MB, aendert sich bei
 # jedem remember, und Git delta-komprimiert SQLite praktisch nicht. Gesichert
-# wird sie per VACUUM INTO nach drive:Projekte/claude-memory-db/.
+# wird sie per VACUUM INTO, ausserhalb dieses Repos.
 memory.db
 memory.db-wal
 memory.db-shm
@@ -13,7 +13,7 @@ memory.db.vor-*
 .venv/
 __pycache__/
 
-# Messung: veroeffentlicht werden die BERICHTE (die vier .md), nicht das
+# Messung: veroeffentlicht werden die BERICHTE (die .md), nicht das
 # Werkzeug dahinter. Die Skripte laufen ohnehin nur gegen den eigenen Bestand,
 # und die Rohdaten sind woertliche Mitschriften echter Arbeitssitzungen -
 # ergebnis.json und zielsicher.json enthalten die tatsaechlich gestellten

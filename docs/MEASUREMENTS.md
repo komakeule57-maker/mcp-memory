@@ -141,6 +141,78 @@ piece was listed. Counting "gold or a sibling of its chain", it is 81.2 %
 either way. A single run's latency swung between +5 and +16 %, hence the
 median.
 
+### The Cascade Against Plain OR
+
+Measured 2026-10-04, prompted by a comparison with another memory tool whose
+bare FTS5 search, once its queries were rewritten to `OR`, came out level
+with this one. The question: do the stages in front of `OR` — word
+sequence and all-terms — earn their place?
+
+Criterion, fixed beforehand: under 10 % relative difference is a tie, per
+row. Same 260 real questions with a gold answer as above, a fresh copy of
+the live dataset (1,903 entries), feedback loop off, `limit=8`. One copy of
+the real `memory_server.py` with one switch inside `_kaskade_roh`; index,
+tokenizer, filter, tag clause and chain folding are identical in every arm.
+
+| | with `marke=` R@1 | R@8 | without `marke=` R@1 | R@8 |
+|---|---|---|---|---|
+| cascade as shipped | 35.8 % | 80.8 % | 24.6 % | 66.9 % |
+| without stem / word part | 35.8 % | 76.2 % | 24.6 % | 61.5 % |
+| `OR` only, ranked by BM25 | 35.4 % | 80.8 % | 27.7 % | 72.3 % |
+
+With `marke=` set — the usual case — plain `OR` is a tie on both measures,
+and the two arms differ in one question each way. Without it, `OR` is ahead:
++12.5 % at rank 1, which is over the threshold, +8.0 % among the eight,
+which is not; 15 questions only `OR` finds, one only the cascade. The
+all-terms stage fills slots with entries that happen to contain every word.
+
+Stem and word part look like they carry 12 to 14 questions (the second row,
+one-sided: none are found only without them). But `OR` plus that stage gives
+exactly the numbers of `OR` alone — `OR` fills the eight slots itself, and
+morphology only ever fills free ones. What it contributes in the shipped
+cascade is what all-terms left empty.
+
+A rebuild was then measured as real source against real source: word
+sequence first, then `OR`, the all-terms stage removed.
+
+| | R@1 | R@8 |
+|---|---|---|
+| 260 questions, with `marke=` | 35.8 → 36.2 % | 80.8 → 81.2 % |
+| 260 questions, without | 24.6 → 25.0 % | 67.3 → 70.0 % |
+| 81 reformulation chains, with `marke=` | 32.1 → 32.1 % | 66.7 → 66.7 % |
+| 81 reformulation chains, without | 9.9 → 9.9 % | 54.3 → 56.8 % |
+
+Every row is a tie. The lead of plain `OR` at rank 1 is gone, because the
+word sequence that goes first pushes the best `OR` hit down; removing that
+precedence would bring back the "Deck 5" failure it was built for. The
+rebuild was not adopted: one stage less code is not a result. (The baseline
+without `marke=` reads 67.3 here and 66.9 above — the copy was drawn again
+with one more entry in it.)
+
+**What this does not show:** that morphology is dispensable. The gold comes
+from the cascade's own operation — what was fetched is what it had shown —
+so questions in an inflected form that never hit are not on the bench. And
+R@8 does not see the case the word-sequence stage exists for. The scripts
+are, like the others, not part of this repository.
+
+### Tool Definitions Are Not Always a Fixed Cost
+
+The fixed-cost figures in `messung/` count the tool definitions as paid in
+every session before the first question. On 2026-10-04 a fresh Claude Code
+session reported 635 tokens for the tools of **all** connected MCP servers
+together (190 tools, marked "loaded on-demand"), and 1.4k after `recall`,
+`themen` and `zeige` had been used: the client lists names and fetches a
+definition when the tool is first needed. The eight definitions, 9,019
+characters, are then a cost per tool used, not per session.
+
+In that session the five calls returned 40,569 characters, 26,815 of them
+one `themen` title index of a project with 351 entries. A shortened set of
+definitions (4,998 characters, every caller-facing rule kept) would have
+saved 1,534 characters there, under 4 % of what the results cost. It was
+measured and not adopted. Whether a client loads up front or on demand is
+the client's choice, so the per-session figures remain right for those that
+load everything; the token counts above are the client's own estimate.
+
 ## Limitations
 
 - **`grep` beats it at compounds** (57/60 vs. 31/60). That's not a defect,

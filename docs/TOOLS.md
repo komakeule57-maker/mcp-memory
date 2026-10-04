@@ -226,6 +226,12 @@ real questions it cost +10 % characters against `recall` → `zeige`. Its
 description, 2,570 characters, was paid in every session regardless. The
 source is in the git history, the measurements in `messung/`.
 
+*Added 2026-10-04:* "paid in every session" holds for clients that load all
+tool definitions up front. Claude Code was observed loading them on demand
+— see "Tool Definitions Are Not Always a Fixed Cost" in
+[MEASUREMENTS.md](MEASUREMENTS.md). The trial's verdict does not hang on
+that sentence: zero calls was the criterion.
+
 ## `themen(marke="", limit=40)`
 
 Counterpart to `recall`: that searches for words, this **browses**.
