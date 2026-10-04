@@ -71,6 +71,18 @@ def test_wortfolge_steht_vor_der_haeufigkeit():
     assert "Krankenstation" in erster_treffer, erster_treffer
 
 
+def test_themen_nennt_bei_unbekannter_marke_die_naheliegenden():
+    """2026-10-04: der Zweig "Marke nicht gefunden" entpackte vier Spalten aus
+    fuenf und warf ValueError - ausgerechnet dort, wo ein Tippfehler oder eine
+    Kurzform ("leuchtturm" statt "leuchtturm-project") aufgefangen werden soll.
+    Im Betrieb kam nur "Error executing tool themen" an."""
+    ms.remember("Das Feuer dreht alle zwoelf Sekunden", tags="leuchtturm-project",
+                art="schnittstelle")
+    aus = ms.themen("leuchtturm")
+    assert "Keine Eintraege" in aus and "leuchtturm-project" in aus, aus
+    assert "Keine Eintraege" in ms.themen("gibtesnicht")
+
+
 def test_chronik_faellt_aus_der_vorgabeansicht_wird_aber_gemeldet():
     """Stilles Ausblenden waere schlimmer als Rauschen: man merkt sonst nie,
     dass der gute Treffer in der Chronik liegt."""

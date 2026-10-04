@@ -2053,7 +2053,7 @@ def themen(marke: str = "", limit: int = 40) -> str:
     if not treffer:
         # Der haeufigste Fall ist ein Tippfehler oder eine Namensvariante,
         # nicht ein leeres Projekt - also gleich die naheliegenden nennen.
-        alle = sorted({m for _, _, _, t in zeilen for m in _marken(t)})
+        alle = sorted({m for _, _, _, t, _ in zeilen for m in _marken(t)})
         # Teilstring UND Aehnlichkeit: das eine faengt die Untermarke
         # ("leuchtturm" -> "leuchtturm-project"), das andere den Vertipper
         # ("leuchttur"), und keines von beiden faengt den Fall des anderen.
