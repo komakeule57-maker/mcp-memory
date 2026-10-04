@@ -213,6 +213,154 @@ measured and not adopted. Whether a client loads up front or on demand is
 the client's choice, so the per-session figures remain right for those that
 load everything; the token counts above are the client's own estimate.
 
+### Capping `themen` and `zeige`
+
+2026-10-04, against 1,907 live entries, read-only. The occasion was the
+session above: "everything about project P01" (351 entries) returned a
+title index of 26,506 characters and then sixteen full texts. `recall`
+had been capped at eight previews for weeks; these two returned whatever
+was asked for.
+
+Criterion, fixed beforehand: characters returned by the real tool
+functions; under 10 % difference is a tie. The one free parameter is
+*which* sixteen entries `zeige` fetches — so not one selection but 200
+random draws with a fixed seed, plus the sixteen newest.
+
+| call | before | after | |
+|---|---|---|---|
+| `themen("P01")` | 26,506 | 4,599 | −83 % |
+| `zeige`, 16 ids, random, median (range) | 24,595 (17,391–33,617) | 8,106 (5,025–9,083) | −67 % |
+| `zeige`, the 16 newest | 18,865 | 8,521 | −55 % |
+
+**Those percentages are the caps themselves, not a finding** — 30 titles
+instead of up to 280, 6,000 characters instead of 24,000. The counter-test
+is the caller who fetches the rest anyway: all sixteen full texts then cost
+30,580 characters over five calls instead of 24,595 in one (+24 %). The
+cap only pays if title lines are enough to choose from. So the real
+question is whether an answer still arrives in the *first* call.
+
+**Does it?** Gold entries drawn at random per project (22 projects, fixed
+seed), one question each, then the usual path with the real functions:
+`recall(question, marke=project)` → `zeige(all eight hits in rank order)`
+— the worst case for the cap. "Answered" means the gold entry is in the
+full-text part of the first `zeige`; the comparison is the same call with
+`voll=True`.
+
+| | run 1: keyword questions | run 2: project-work questions |
+|---|---|---|
+| questions (gold outside the chronicle) | 158 | 110 |
+| words per question | 3.2 | 7.6 |
+| question words found verbatim in the gold's title line | 60 % | 4 % |
+| found by `recall` | 153 (97 %) | 106 (96 %) |
+| gold at rank 1 | 135 | 96 |
+| in the first `zeige`, uncapped | 153 | 106 |
+| in the first `zeige`, capped | 150 | 106 |
+| lost to the cap | 3 (ranks 5, 7, 8) | 0 |
+| `zeige` over 8 hits, characters | 6,843 → 4,897 (−28 %) | 8,274 → 5,461 (−34 %) |
+| `zeige` over the best 3, characters | 3,001 → 2,948 (−2 %) | 3,307 → 3,216 (−3 %) |
+
+Run 1 was too easy — its questions were close to the title lines — and
+was repeated as run 2 with questions written from the point of view of
+someone who has the problem, not the solution. The result did not move.
+The cap is harmless on this path because `recall` puts the entry among
+the first three hits almost every time and the first block holds a median
+of four full texts.
+
+Replaying the 411 real `zeige` calls from 151 earlier sessions against
+today's dataset says the same from the other side: 332 (81 %) pass
+uncapped — the median call asks for three ids — and the total shrinks by
+16 %.
+
+**What the cap on `themen` costs.** Whether the gold's title line is in
+the output at all, old code (from the previous commit, loaded as a second
+module) against page 1 of the new:
+
+| projects | gold | old: in the index | old: characters | page 1: in the index | page 1: characters |
+|---|---|---|---|---|---|
+| the 12 largest (44–351 entries) | 60 | 57 | 10,211 | 18 | 3,999 (−61 %) |
+| the 10 smallest (8–31 entries) | 50 | 50 | 1,730 | 50 | 1,952 (+13 %) |
+
+Page 1 is sorted by date and the gold was drawn uniformly over age, so in
+a large project it is rarely there. That is not a defect to tune away but
+a change of purpose: page 1 answers "what happened lately", and older
+knowledge is reached through `recall`. The 13 % that small projects now
+cost *more* — each line carries its kind — is a known regression, left
+open.
+
+Limits: questions were written by a language model that had seen the
+entry; run 2's are longer than real ones (median of 591 real `recall`
+queries: 5 words), and more words give a term search more to hold on to.
+Five to eight questions per project carry no comparison between projects.
+The values 30 and 6,000 are set, not measured. The scripts, questions and
+gold sets are not part of this repository.
+
+### A Project Tag Hides Everything Outside It
+
+Same day, same setup. The question was whether the tool is a project
+memory or a general one. First the dataset: 1,664 of 1,907 live entries
+carry one of the 22 tags of a project with a folder, 113 belong to other
+projects, 130 (7 %) are general — the machine, tools, hosting, ways of
+working. That last sorting was done by hand over tag prefixes.
+
+Then one dial: the same questions with and without `marke=`. And a third
+set, 40 gold entries drawn from the general 130, questions paraphrased as
+strictly as in run 2.
+
+| | project, with `marke=` | same questions, without | general knowledge, without |
+|---|---|---|---|
+| questions | 110 | 110 | 40 |
+| found | 106 (96 %) | 103 (94 %) | 37 (92 %) |
+| gold at rank 1 | 96 (87 %) | 93 (85 %) | 34 (85 %) |
+
+All three are a tie. **The search does not treat general entries worse
+than project entries.** The filter does matter for short questions: with
+the 3.2-word questions of run 1, 97 % are found with `marke=` and 85 %
+without — twelve points, above the threshold.
+
+The weak point is elsewhere. A session working in a project asks with
+that project's tag, and the tag is joined with `AND` to every stage of
+the cascade. The 40 general questions, asked once under each of the 22
+project tags:
+
+| | without `marke=` | under a project tag |
+|---|---|---|
+| gold found | 37 of 40 (92 %) | **0 of 880** |
+| empty answer — `recall` itself suggests dropping the tag | — | 107 (12 %) |
+| project hits, marked as `OR` fallback | — | 729 (83 %) |
+| project hits, no mark at all | — | 44 (5 %) |
+
+Zero is by construction, not a sampling result. What the measurement adds
+is the second half: in 88 % of the cases the session gets a full list
+that looks like an answer.
+
+Three ways of saying so were compared with one switch in the real code.
+The hint should appear when the answer lies outside the tag (880 cases)
+and stay away when it lies inside (the project questions, asked under
+their own tag):
+
+| trigger | appears when it should | names the gold itself | false alarm, long questions (110) | false alarm, short questions (158) |
+|---|---|---|---|---|
+| plain text on every `OR` fallback | 729 (83 %) | 0 | 102 (93 %) | 52 (33 %) |
+| on `OR` fallback, only if the best hit *without* the tag lies outside; that hit is named | 726 (82 %) | 614 (70 %) | 8 (7 %) | 25 (16 %) |
+| the same probe on every search with a tag | 770 (88 %) | 653 (74 %) | 9 (8 %) | 30 (19 %) |
+
+The first was the obvious fix and had already been agreed on. It
+discriminates nothing: long questions fall back to `OR` almost always, so
+the hint appeared on project questions *more* often than where it
+belonged. The second is what was built. Together with the empty answers
+it covers 833 of the 880 (95 %), and in 70 % the named line already is
+the entry sought — a `zeige` instead of a second `recall`. It costs one
+more query on that path (14 → 23 ms) and 18 % more characters there; a
+project question under its own tag is unchanged (+1 %). The third buys
+six points for a second query in every tagged search and was left out.
+
+Limits: the 880 cases are 40 questions times 22 tags, not 880 independent
+questions. With shorter real questions the share of unmarked project hits
+— the 5 % no trigger reaches — is probably larger. A false alarm here is
+one line pointing at another project's entry, not a wrong answer. And how
+often a project session actually asks for general knowledge was not
+measured at all.
+
 ## Limitations
 
 - **`grep` beats it at compounds** (57/60 vs. 31/60). That's not a defect,
@@ -237,6 +385,12 @@ load everything; the token counts above are the client's own estimate.
   shows **which** terms were tried. A vector search only shows that
   something matched, never why — and that removes exactly the
   traceability the rest of the project worked hard to earn.
+- **A project tag hides everything outside it.** `marke=` is a hard
+  filter, so a session working in a project does not see general
+  knowledge unless it asks without the tag. `recall` now points at the
+  better match outside in most such cases, but not in all (95 % of those
+  measured), and the caller still has to follow the pointer. The tool is
+  project-bound in how it is used, not in what the search can find.
 - **Has to be invoked.** An always-loaded context file sits there
   passively; this tool doesn't. A pointer in the context file ("you reach
   your memory via `recall`") is therefore more effective than any

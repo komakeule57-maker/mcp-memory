@@ -2034,8 +2034,9 @@ def themen(marke: str = "", limit: int = 0, seite: int = 1, alle: bool = False) 
     Counterpart to recall: that searches for words, this browses. Without an
     argument, the tag board (which project, how many entries, how they're
     distributed across kinds of knowledge); with an argument, that project's
-    title lines, newest first, one page at a time - the header says how many
-    more there are and how to get them.
+    title lines, newest first, one page at a time - the last line says how
+    many more there are and how to get them. Page 1 answers "what happened
+    here lately"; for anything older use recall(query, marke="...").
 
     What this is for: recall only finds what you already know to ask for.
     Someone picking a project back up after months doesn't remember the

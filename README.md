@@ -39,8 +39,14 @@ contradictions surface instead of quietly piling up.
   instead of accumulate.
 - **Nothing is ever deleted** — superseded entries drop out of the default
   view and stay findable, with a note on why and by what.
-- **Browsing, not just searching** — `themen()` lists projects and title
-  lines for when you have forgotten the words to search for.
+- **Browsing, not just searching** — `themen()` lists projects and a
+  project's newest title lines for when you have forgotten the words to
+  search for. Capped like everything else: one page, and a line saying how
+  to get the rest.
+- **Project-bound in use, not in search** — the usual question is asked
+  inside one project, with `marke=`. That filter is hard, so when the best
+  match lies outside the project, `recall` names it instead of leaving you
+  with a plausible-looking list of the wrong entries.
 - **Opt-in second opinion** — optionally ask any OpenAI-compatible model
   whether two entries contradict each other or just supersede one another.
 - **It learns from its own failures** — when a search is followed by
@@ -124,7 +130,7 @@ not need them. The tools are then called `mcp__memory-b__recall` and so on.
 | | |
 |---|---|
 | `remember(text, tags, art, ersetzt)` | store an entry; reports similar existing ones and what it would supersede |
-| `recall(query, limit, art, marke, …)` | ranked full-text search, preview by default |
+| `recall(query, limit, art, marke, …)` | ranked full-text search, preview by default; under `marke=` it names a better match outside the project |
 | `zeige(ids, voll)` | full text of specific entries, about 6000 characters per call; what doesn't fit is listed with the call that fetches it |
 | `themen(marke, limit, seite, alle)` | browse: which projects exist, or one project's title lines, newest first, a page at a time |
 | `vergessen(ids, grund)` | mark as outdated — never deletes |
@@ -154,6 +160,20 @@ installation, not a benchmark:
   ranking fix — found by measuring where real search sessions had failed,
   not by guessing. On today's dataset the same fix also *costs* 3 of the 117
   questions that already worked, so the net is +2 of 164.
+
+- **93 % of the dataset belongs to a project** (1,777 of 1,907 entries),
+  and that is how the tool is used. Search itself does not care: general
+  knowledge is found as well as project knowledge (92 % vs. 96 %, a tie
+  under the 10 % rule). What the project filter buys is precision for
+  short questions — 97 % vs. 85 % found at about three words. What it
+  costs is everything outside the project: 40 questions about general
+  knowledge, asked under 22 project tags, found **0 of 880**. `recall` now
+  names the better match outside the tag in 82 % of those cases, and in
+  70 % that line already is the entry sought; on real project questions
+  it fires in 7–16 %.
+- **−83 % for a project's title index, −34 % for fetching eight full
+  texts**, from capping `themen` and `zeige`. On 110 project questions the
+  cap cost not one answer.
 
 Where a measurement did not survive a larger sample, it says so:
 [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md), and the raw reports in

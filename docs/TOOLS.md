@@ -216,6 +216,28 @@ count as syntax — it shows up constantly in German questions.
 On `limit`: 8 is measured. Below that, morphology blending crowds out
 exact hits; above it, mostly the returned payload grows.
 
+### `marke=` is a hard filter — and says so when it hurts
+
+The tag is joined with `AND` to **every** stage of the cascade, the `OR`
+fallback included. Nothing outside the project can appear among the hits.
+That is what makes short questions precise inside a project, and it is
+also a trap: a question about general knowledge (the machine, a tool, a
+way of working), asked from inside a project session, used to come back
+as eight project entries that merely share a word with it.
+
+So when a search under `marke=` falls back to `OR`, `recall` runs the
+same search once without the tag. If the best hit of that search lies
+outside the project, a last line names it:
+
+```
+Ausserhalb von raumschiff-project passt besser: #812 [fallstrick] 2026-09-12 Die Shell bricht bei Umlauten im Pfad ab…  (shell-fallen) - ohne marke= noch einmal probieren.
+```
+
+It is a pointer, not a ninth hit: the list itself stays inside the tag.
+Often the line already is the answer and `zeige("812")` finishes the job.
+Two simpler triggers were measured and dropped — see "A Project Tag Hides
+Everything Outside It" in [MEASUREMENTS.md](MEASUREMENTS.md).
+
 ## `frage()` — removed 2026-10-01
 
 Same search as `recall`, but with the top hit in full text and split memos
@@ -232,13 +254,15 @@ tool definitions up front. Claude Code was observed loading them on demand
 [MEASUREMENTS.md](MEASUREMENTS.md). The trial's verdict does not hang on
 that sentence: zero calls was the criterion.
 
-## `themen(marke="", limit=40)`
+## `themen(marke="", limit=0, seite=1, alle=False)`
 
 Counterpart to `recall`: that searches for words, this **browses**.
 
 ```
-themen()                      -> which projects exist, how big, how distributed
-themen("mcp-memory-server")   -> this project's title lines, grouped by kind
+themen()                               -> which projects exist, how big, how distributed
+themen("mcp-memory-server")            -> this project's 30 newest title lines
+themen("mcp-memory-server", seite=2)   -> the next 30
+themen("mcp-memory-server", alle=True) -> the whole index, grouped by kind
 ```
 
 **What's this for, when there's already a search:** `recall` only finds
@@ -246,6 +270,20 @@ what you already know to ask for. Whoever picks a project back up after
 months doesn't remember the terms anymore — and needs a list first, from
 which to pull up the entry. The sequence is then
 `themen("project")` → `zeige("id")` or `recall(query, marke="project")`.
+
+**One page, newest first.** Until 2026-10-04 the title index showed up to
+40 entries *per kind*; for a project with 351 entries that was 26,506
+characters before a single entry had been read. Now it is one page across
+all kinds, a line with the distribution over kinds, and a last line that
+counts what is missing and names the call that fetches it. `limit` is the
+page size (default 30 for the index, 40 rows for the board).
+
+That makes page 1 the answer to "what happened here lately" — and
+nothing more. It is sorted by date, so in a large project an older entry
+is not on it: of 60 randomly drawn entries from the twelve largest
+projects, 18 were (the old index had 57, at two and a half times the
+size). **For anything older, `recall(query, marke="project")` is the
+way**, not paging.
 
 The board without an argument also shows, incidentally, where the kind
 backlog sits. As of 2026-09-15 it's almost entirely in the legacy data
@@ -261,13 +299,34 @@ neither catches the other's case.
 Unlike `recall`, the **chronicle is not hidden here**: when browsing it's
 the scaffolding, not the filler that drowns out every search.
 
-## `zeige(ids)`
+## `zeige(ids, voll=False)`
 
 Counterpart to the preview: `zeige("376,481")` returns exactly those
 entries in full text. Outdated ones explicitly included — whoever asks
 for the id means that one too. This output also carries the chain note:
 it names the neighboring ids, and that's exactly when you want them —
 when you're already looking at the full text.
+
+**About 6,000 characters per call**, in the order asked — so the id you
+want most goes first. What doesn't fit comes back as a title line, with
+the call that fetches it; `voll=True` lifts the cap:
+
+```
+3 weitere verlangt, nicht gezeigt (Deckel 6000 Zeichen je Aufruf) - weiter mit zeige("481,502,77"), alles auf einmal mit voll=True:
+#481 [fallstrick] 2026-09-03 …
+```
+
+The cap is per call, not per entry, because that is where the cost was:
+only 5 of 1,907 entries are longer than 4,000 characters, but sixteen
+ordinary ones in one call came to a median of 24,595. Three rules keep it
+from cutting silently:
+
+- The pieces of one cut-up memo are **one unit** — shown together or
+  deferred together, and never truncated. The longest chain in the
+  dataset (4,609 characters) is why the cap is not lower.
+- The first unit is always shown, whatever its size.
+- A single entry longer than the cap is the only thing ever cut
+  mid-text: at a line break, with both lengths and the call for the rest.
 
 ## `einordnen(ids, art)`
 
