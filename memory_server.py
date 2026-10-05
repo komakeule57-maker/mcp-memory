@@ -13,7 +13,9 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
+import morphologie
 from morphologie import kandidaten, stamm_spalte, stem, teile_spalte, wortschatz
+from texte_en import TEXTE_EN
 
 # Zweitmeinung zum Dublettenhinweis, optional. Der Import ist gekapselt, damit
 # eine fehlende, kaputte oder halb bearbeitete faktencheck.py den ganzen Server
@@ -46,7 +48,7 @@ GAST = False
 # `pruefe` lesen zwar auch nur, sind aber Pflegewerkzeuge - wer Dubletten
 # findet, muss sie abloesen koennen, und das kann nur der Besitzer. Sie kosteten
 # den Gast 3.014 von 6.635 Zeichen Werkzeugbeschreibung, in jeder Sitzung.
-GASTWERKZEUGE = ("recall", "zeige", "themen")
+GASTWERKZEUGE = ("recall", "zeige", "themen", "show", "topics")  # deutsch und englisch
 
 # Die Spalten des INDEX. `ts` steht nicht darin - das Datum ist zum Anzeigen
 # da, nie ein Suchwort. Bis Stand 4 war das eine Verabredung (`UNINDEXED`) in
@@ -135,6 +137,65 @@ UNSORTIERT = "gemischt"
 # holt sie zurueck. Dasselbe Muster wie bei veralteten Eintraegen.
 STUMM = ("verlauf",)
 
+# --------------------------------------------------------------------------
+# Sprache: MEMORY_LANG=en schaltet Werkzeugnamen, Meldungen, Art-Namen und den
+# Stemmer auf Englisch. Die Datenbank bleibt dieselbe: die Arten stehen dort
+# immer deutsch, uebersetzt wird nur an der Grenze nach aussen.
+# Die eine Quelle ist morphologie.SPRACHE - der Stemmer muss dieselbe Sprache
+# sprechen wie die Meldungen, sonst driftet der Index (siehe _sprache_pruefen).
+# --------------------------------------------------------------------------
+ARTEN_EN = {
+    "schnittstelle": "interface",
+    "fallstrick": "pitfall",
+    "entscheidung": "decision",
+    "messwert": "measurement",
+    "arbeitsweise": "workflow",
+    "verlauf": "history",
+    UNSORTIERT: "unsorted",
+}
+# Englische Namen werden in BEIDEN Sprachen angenommen - kostet nichts und
+# erspart die Fehlermeldung, wenn jemand die Sprache des Servers nicht kennt.
+_ART_EIN = {en: de for de, en in ARTEN_EN.items()} | {"all": "alle"}
+
+
+def _en() -> bool:
+    return morphologie.SPRACHE == "en"
+
+
+def _t(vorlage: str, **werte) -> str:
+    """Meldung in der Sprache des Servers. Schluessel ist der deutsche Text
+    selbst (wie bei gettext): fehlt eine Uebersetzung, kommt Deutsch statt
+    eines Fehlers. Dass keine fehlt, prueft test_memory.py."""
+    if _en():
+        vorlage = TEXTE_EN.get(vorlage, vorlage)
+    return vorlage.format(**werte) if werte else vorlage
+
+
+def _art_aus(art: str) -> str:
+    return ARTEN_EN.get(art, art) if _en() else art
+
+
+def _artenliste() -> str:
+    return ", ".join(_art_aus(a) for a in ARTEN)
+
+
+def _ist_artwort(m: str) -> bool:
+    k = m.lower()
+    return k in ARTEN or (_en() and k in _ART_EIN)
+
+
+_URTEILE_EN = {"WIDERSPRUCH": "CONTRADICTION", "FORTSCHRITT": "PROGRESS",
+               "UNABHAENGIG": "INDEPENDENT"}
+
+
+def _urteil_aus(urteil):
+    return _URTEILE_EN.get(urteil, urteil) if (_en() and urteil) else urteil
+
+
+def _veraltet_vermerk(grund: str, durch) -> str:
+    return (_t(" [VERALTET: {grund}", grund=grund)
+            + (_t(", ersetzt durch #{durch}", durch=durch) if durch else "") + "]")
+
 # Das Markenfeld ist mehrwertig, und im Bestand stehen BEIDE Trenner
 # nebeneinander ("spiel3d-test Nachtfrost" neben "spiel3d-test,Nachtfrost").
 # Deshalb wird an beiden getrennt, statt sich auf einen zu verlassen.
@@ -217,11 +278,17 @@ def _connect_lesend() -> sqlite3.Connection:
     stand = int(zeile[0]) if zeile else 0
     if stand != SCHEMA_STAND:
         conn.close()
-        raise RuntimeError(
-            f"Gedaechtnis '{NAME}' steht auf Schemastand {stand}, dieser Server erwartet "
-            f"{SCHEMA_STAND}. Ein Gast migriert nicht - erst auf {NAME} selbst eine "
-            "Sitzung starten, dann wieder hier."
-        )
+        raise RuntimeError(_t(
+            "Gedaechtnis '{name}' steht auf Schemastand {stand}, dieser Server erwartet "
+            "{soll}. Ein Gast migriert nicht - erst auf {name} selbst eine "
+            "Sitzung starten, dann wieder hier.", name=NAME, stand=stand, soll=SCHEMA_STAND))
+    try:
+        zeile = conn.execute("SELECT wert FROM schema WHERE schluessel = 'sprache'").fetchone()
+    except sqlite3.OperationalError:
+        zeile = None
+    if (zeile[0] if zeile else "de") != morphologie.SPRACHE:
+        conn.close()
+        raise RuntimeError(_sprachfehler(zeile[0] if zeile else "de"))
     return conn
 
 
@@ -244,11 +311,10 @@ def _ids(text: str) -> list:
     aus = []
     for name, zahl in _NUMMER.findall(text or ""):
         if name and name.lower() != NAME:
-            raise ValueError(
-                f"{name}#{zahl} gehoert zum Gedaechtnis '{name}', dieses hier heisst "
-                f"'{NAME}'. Dieselbe Nummer bezeichnet hier einen anderen Eintrag - "
-                "nichts getan."
-            )
+            raise ValueError(_t(
+                "{fremd}#{zahl} gehoert zum Gedaechtnis '{fremd}', dieses hier heisst "
+                "'{name}'. Dieselbe Nummer bezeichnet hier einen anderen Eintrag - "
+                "nichts getan.", fremd=name, zahl=zahl, name=NAME))
         aus.append(int(zahl))
     return aus
 
@@ -307,12 +373,11 @@ def _schema_sicherstellen(conn: sqlite3.Connection) -> None:
     if not _gibt_es(conn, "eintrag"):
         if _gibt_es(conn, "mem"):
             if stand < 4:
-                raise RuntimeError(
-                    f"Diese Datenbank steht auf Schemastand {stand}. Die Stufen davor "
+                raise RuntimeError(_t(
+                    "Diese Datenbank steht auf Schemastand {stand}. Die Stufen davor "
                     "sind mit Stand 5 entfallen - es gab keine Datenbank mehr, die sie "
                     "braucht. Mit einem Checkout vor dem Umbau auf Stand 4 bringen, "
-                    "dann hier weiter."
-                )
+                    "dann hier weiter.", stand=stand))
             _umzug_auf_5(conn)
         else:
             _speicher_anlegen(conn)
@@ -323,6 +388,51 @@ def _schema_sicherstellen(conn: sqlite3.Connection) -> None:
     if stand != SCHEMA_STAND:
         _stand_setzen(conn, SCHEMA_STAND)
         conn.commit()
+    _sprache_pruefen(conn)
+
+
+# Nur nachziehen.py setzt das: es rechnet die Stammspalten in der Sprache des
+# Servers neu und darf deshalb die Sprachmarke umschreiben, statt abgewiesen
+# zu werden. Ohne Commit - der faellt erst mit dem Nachziehen, sonst stuende
+# die neue Marke ueber alten Spalten, falls der Lauf abbricht.
+SPRACHE_UMSTELLEN = False
+
+
+def _sprachfehler(gespeichert: str) -> str:
+    return _t(
+        "Dieses Gedaechtnis ist in Sprache '{alt}' angelegt, der Server laeuft mit "
+        "MEMORY_LANG='{neu}'. Die Stammsuche wuerde lautlos driften - nichts getan. "
+        "Entweder MEMORY_LANG={alt} setzen, oder mit MEMORY_LANG={neu} einmal "
+        "nachziehen.py laufen lassen (Sicherungskopie vorher).",
+        alt=gespeichert, neu=morphologie.SPRACHE)
+
+
+def _sprache_pruefen(conn: sqlite3.Connection) -> None:
+    """Haelt den Index in der Sprache, in der er gerechnet wurde.
+
+    `stems` und `teile` sind beim Speichern gerechnet. Laeuft derselbe Bestand
+    spaeter mit dem anderen Stemmer, passen Frage und Spalte nicht mehr
+    zusammen - und niemand merkt es (dieselbe Drift wie #1424). Also steht die
+    Sprache in der Datei, und ein Wechsel geht nur ueber nachziehen.py.
+    Ein Bestand von vor dem Schalter ist deutsch gerechnet.
+    """
+    zeile = conn.execute("SELECT wert FROM schema WHERE schluessel = 'sprache'").fetchone()
+    if zeile is None:
+        bestand = conn.execute("SELECT 1 FROM eintrag LIMIT 1").fetchone()
+        gespeichert = "de" if bestand else morphologie.SPRACHE
+        conn.execute("INSERT INTO schema (schluessel, wert) VALUES ('sprache', ?)", (gespeichert,))
+        if not SPRACHE_UMSTELLEN:
+            conn.commit()
+    else:
+        gespeichert = zeile[0]
+    if gespeichert == morphologie.SPRACHE:
+        return
+    if SPRACHE_UMSTELLEN:
+        conn.execute("UPDATE schema SET wert = ? WHERE schluessel = 'sprache'",
+                     (morphologie.SPRACHE,))
+        return
+    conn.close()
+    raise RuntimeError(_sprachfehler(gespeichert))
 
 
 def _schattenbestand_bergen(conn: sqlite3.Connection) -> int:
@@ -506,7 +616,7 @@ def _marken_nachtragen(conn: sqlite3.Connection) -> int:
         if rowid in tot:
             continue
         for m in _marken(tags):
-            if m.lower() in ARTEN:
+            if _ist_artwort(m):
                 continue
             gefunden[m] = min(gefunden.get(m, ts), ts)
     conn.execute("DELETE FROM marken")
@@ -653,10 +763,12 @@ def _ketten_von(conn: sqlite3.Connection, ids) -> dict:
     for i, (kopf, nr) in teil.items():
         anzahl, letzte = ganz[kopf]
         if nr == 1:
-            aus[i] = f" [Stueck {nr} von {anzahl}, zerschnittenes Memo #{kopf}-#{letzte}]"
+            aus[i] = _t(" [Stueck {nr} von {anzahl}, zerschnittenes Memo #{kopf}-#{letzte}]",
+                        nr=nr, anzahl=anzahl, kopf=kopf, letzte=letzte)
         else:
-            aus[i] = (f" [Stueck {nr} von {anzahl} von \"{betreff[kopf]}\","
-                      f" zerschnittenes Memo #{kopf}-#{letzte}]")
+            aus[i] = _t(' [Stueck {nr} von {anzahl} von "{betreff}",'
+                        ' zerschnittenes Memo #{kopf}-#{letzte}]',
+                        nr=nr, anzahl=anzahl, betreff=betreff[kopf], kopf=kopf, letzte=letzte)
     return aus
 
 
@@ -848,17 +960,18 @@ def _suche(conn: sqlite3.Connection, query: str, limit: int, filter_=("", ())):
 
 def _arten_lesen(art: str):
     """'' -> None (Vorgabe), 'alle' -> 'alle', sonst Liste. Wirft bei Unbekanntem."""
-    namen = [w for w in re.split(r"[\s,]+", (art or "").strip().lower()) if w]
+    namen = [_ART_EIN.get(w, w)
+             for w in re.split(r"[\s,]+", (art or "").strip().lower()) if w]
     if not namen:
         return None
     if "alle" in namen:
         return "alle"
     unbekannt = [n for n in namen if n not in ARTEN and n != UNSORTIERT]
     if unbekannt:
-        raise ValueError(
-            f"Unbekannte Art: {', '.join(unbekannt)}. "
-            f"Moeglich: {', '.join(ARTEN)}, {UNSORTIERT}, alle."
-        )
+        raise ValueError(_t(
+            "Unbekannte Art: {unbekannt}. Moeglich: {moeglich}, {unsortiert}, alle.",
+            unbekannt=", ".join(unbekannt), moeglich=_artenliste(),
+            unsortiert=_art_aus(UNSORTIERT)))
     return namen
 
 
@@ -913,6 +1026,7 @@ def _titel(content: str, breite: int = 120) -> str:
 
 def _zeile(rid, ts, content, tags, art, voll: bool, vermerk: str = "") -> str:
     """Eine Trefferzeile - als Vorschau oder im Volltext."""
+    art = _art_aus(art)
     if voll:
         kopf = f"#{rid} [{ts}] ({art}" + (f", {tags}" if tags else "") + ")"
         return f"{kopf}{vermerk}\n{content}"
@@ -984,7 +1098,7 @@ def _zahlabweichung(neu: str, alt: str) -> str:
     nur_neu, nur_alt = zn - za, za - zn
     if not nur_neu or not nur_alt:
         return ""
-    return f", Zahlen {_knapp(nur_alt)} -> {_knapp(nur_neu)}"
+    return _t(", Zahlen {alt} -> {neu}", alt=_knapp(nur_alt), neu=_knapp(nur_neu))
 
 
 # Wie das Urteil in der Zeile erscheint. Mit Fragezeichen, und das ist keine
@@ -1038,24 +1152,24 @@ def remember(text: str, tags: str = "", art: str = "", ersetzt: str = "") -> str
     """
     text = text.strip()
     if not text:
-        return "Fehler: 'text' ist leer - nichts gespeichert."
+        return _t("Fehler: 'text' ist leer - nichts gespeichert.")
     tags = tags.strip()
     try:
         gewaehlt = _arten_lesen(art)
     except ValueError as exc:
-        return f"Fehler: {exc} - nichts gespeichert."
+        return _t("Fehler: {exc} - nichts gespeichert.", exc=exc)
     if gewaehlt in (None, "alle"):
         gewaehlt = []
     if len(gewaehlt) > 1:
-        return (
-            f"Fehler: genau eine Art, nicht {len(gewaehlt)} ({', '.join(gewaehlt)}) - "
-            "nichts gespeichert. Gehoert der Text zu mehreren, sind es mehrere Eintraege."
-        )
+        return _t(
+            "Fehler: genau eine Art, nicht {n} ({arten}) - "
+            "nichts gespeichert. Gehoert der Text zu mehreren, sind es mehrere Eintraege.",
+            n=len(gewaehlt), arten=", ".join(_art_aus(a) for a in gewaehlt))
     meine_art = gewaehlt[0] if gewaehlt else UNSORTIERT
     try:
         _ids(ersetzt)
     except ValueError as exc:
-        return f"Fehler: {exc} - nichts gespeichert."
+        return _t("Fehler: {exc} - nichts gespeichert.", exc=exc)
 
     conn = _connect()
     try:
@@ -1086,7 +1200,7 @@ def remember(text: str, tags: str = "", art: str = "", ersetzt: str = "") -> str
             conn.commit()
         except sqlite3.Error as exc:
             conn.rollback()
-            return f"Fehler beim Speichern: {exc} - nichts gespeichert."
+            return _t("Fehler beim Speichern: {exc} - nichts gespeichert.", exc=exc)
 
         # NACH dem Commit, und ausdruecklich jeder Fehler gefangen. Der
         # Dublettenhinweis ist reine Lesearbeit und nur eine Zugabe; lief er
@@ -1101,32 +1215,31 @@ def remember(text: str, tags: str = "", art: str = "", ersetzt: str = "") -> str
         conn.close()
 
     zeilen = [
-        f"Gespeichert #{neu_id} [{ts}] als {meine_art}"
+        _t("Gespeichert #{id} [{ts}] als {art}", id=neu_id, ts=ts, art=_art_aus(meine_art))
         + (f" (Tags: {tags})" if tags else "")
     ]
     if meine_art == UNSORTIERT:
-        zeilen.append(
+        zeilen.append(_t(
             "Ohne Art gespeichert. Bitte art= setzen, sonst ist der Eintrag nur "
-            f"ueber die Volltextsuche zu finden: {', '.join(ARTEN)}."
-        )
+            "ueber die Volltextsuche zu finden: {arten}.", arten=_artenliste()))
     for mahnung in _zuschnitt(text) + markenhinweise:
         zeilen.append(mahnung)
     if abgeloest:
-        zeilen.append(f"Als veraltet markiert: {', '.join('#'+str(i) for i in abgeloest)}")
+        zeilen.append(_t("Als veraltet markiert: {ids}",
+                         ids=", ".join("#" + str(i) for i in abgeloest)))
     if aehnlich:
-        zeilen.append("Aehnliche Eintraege - pruefen, ob einer davon ersetzt gehoert:")
+        zeilen.append(_t("Aehnliche Eintraege - pruefen, ob einer davon ersetzt gehoert:"))
         gesagt = _urteile(text, aehnlich)
         for (rid, anteil, inhalt), wie in zip(aehnlich, gesagt):
             zeilen.append(
-                f"  #{rid} ({anteil:.0%} Ueberschneidung"
-                f"{_zahlabweichung(text, inhalt)}{_VERMERKE.get(wie, '')}) "
+                f"  #{rid} ({anteil:.0%} " + _t("Ueberschneidung")
+                + f"{_zahlabweichung(text, inhalt)}{_t(_VERMERKE.get(wie, ''))}) "
                 f"{_titel(inhalt)}"
             )
         if any(gesagt):
-            zeilen.append(
+            zeilen.append(_t(
                 "  (die Vermerke mit ? sind die Einschaetzung eines kleinen "
-                "Sprachmodells, kein Befund - selbst nachsehen)"
-            )
+                "Sprachmodells, kein Befund - selbst nachsehen)"))
     return "\n".join(zeilen)
 
 
@@ -1146,15 +1259,13 @@ def _zuschnitt(text: str) -> list:
     """
     hinweise = []
     if len(text) > 900:
-        hinweise.append(
-            f"Eintrag ist {len(text)} Zeichen lang (Mittel im Bestand: ~600). "
-            "recall gibt ganze Eintraege zurueck - lieber zwei daraus machen."
-        )
+        hinweise.append(_t(
+            "Eintrag ist {n} Zeichen lang (Mittel im Bestand: ~600). "
+            "recall gibt ganze Eintraege zurueck - lieber zwei daraus machen.", n=len(text)))
     if _DATUMSKOPF.match(text.lstrip()) and len(text) > 400:
-        hinweise.append(
+        hinweise.append(_t(
             "Faengt mit einem Datum an: das ist meist Chronik plus Wissen in einem "
-            "Absatz. Die Chronik als art=verlauf trennen haelt die Suche sauber."
-        )
+            "Absatz. Die Chronik als art=verlauf trennen haelt die Suche sauber."))
     return hinweise
 
 
@@ -1265,29 +1376,27 @@ def _markenpruefung(conn, tags: str) -> list:
     bekannt = [r[0] for r in conn.execute("SELECT marke FROM marken")]
     hinweise = []
     for m in _marken(tags):
-        if m.lower() in ARTEN:
-            hinweise.append(
-                f"Marke '{m}' ist ein Art-Wort. Die Marke sagt WO, die Art WELCHE "
-                "SORTE - dafuer ist art= da."
-            )
+        if _ist_artwort(m):
+            hinweise.append(_t(
+                "Marke '{m}' ist ein Art-Wort. Die Marke sagt WO, die Art WELCHE "
+                "SORTE - dafuer ist art= da.", m=m))
             continue
         eigene = _markenzahl(conn, m)
         if eigene >= MARKE_ETABLIERT:
             continue
         nah = [b for b in _nachbarmarken(m, bekannt) if _markenzahl(conn, b) > eigene]
         if nah and eigene:
-            hinweise.append(
-                f"Marke '{m}' traegt erst {eigene} "
-                f"{'Eintrag' if eigene == 1 else 'Eintraege'} - dem Bestand bekannt "
-                f"ist: {', '.join(nah[:3])}. Dieselbe Sache?"
-            )
+            hinweise.append(_t(
+                "Marke '{m}' traegt erst {n} {wort} - dem Bestand bekannt "
+                "ist: {nah}. Dieselbe Sache?", m=m, n=eigene,
+                wort=_t("Eintrag") if eigene == 1 else _t("Eintraege"),
+                nah=", ".join(nah[:3])))
         elif nah:
-            hinweise.append(
-                f"Neue Marke '{m}' - dem Bestand schon bekannt ist: "
-                f"{', '.join(nah[:3])}. Dieselbe Sache?"
-            )
+            hinweise.append(_t(
+                "Neue Marke '{m}' - dem Bestand schon bekannt ist: "
+                "{nah}. Dieselbe Sache?", m=m, nah=", ".join(nah[:3])))
         elif not eigene:
-            hinweise.append(f"Neue Marke '{m}' - bisher traegt sie kein Eintrag.")
+            hinweise.append(_t("Neue Marke '{m}' - bisher traegt sie kein Eintrag.", m=m))
     return hinweise
 
 
@@ -1299,7 +1408,7 @@ def _marken_eintragen(conn, tags: str) -> None:
     """
     conn.executemany(
         "INSERT OR IGNORE INTO marken (marke, seit) VALUES (?, datetime('now'))",
-        [(m,) for m in _marken(tags) if m.lower() not in ARTEN],
+        [(m,) for m in _marken(tags) if not _ist_artwort(m)],
     )
 
 
@@ -1359,7 +1468,7 @@ def verdichten(marke: str = "", art: str = "alle", schwelle: float = 0.5, gruppe
         try:
             wo_art, art_args = _filter(art=art)
         except ValueError as exc:
-            return f"Fehler: {exc}"
+            return _t("Fehler: {exc}", exc=exc)
         wo = f"WHERE 1=1{wo_art}"
         args = list(art_args)
         klausel = _marken_klausel(marke)
@@ -1373,7 +1482,7 @@ def verdichten(marke: str = "", art: str = "alle", schwelle: float = 0.5, gruppe
             f"SELECT e.id, e.ts, e.content, e.tags, e.art FROM eintrag e {wo}", tuple(args)
         ).fetchall()
         if len(zeilen) < 2:
-            return "Zu wenige Eintraege fuer einen Vergleich."
+            return _t("Zu wenige Eintraege fuer einen Vergleich.")
 
         staemme = {r[0]: _staemme(r[2]) for r in zeilen}
         alle = set().union(*staemme.values())
@@ -1404,10 +1513,10 @@ def verdichten(marke: str = "", art: str = "alle", schwelle: float = 0.5, gruppe
         if vereint and gemeinsam / vereint >= schwelle:
             paare.append((gemeinsam / vereint, a, b))
     if not paare:
-        return (
-            f"{len(zeilen)} Eintraege geprueft ({len(kandidaten)} Paare verglichen) - "
-            f"nichts ueber {schwelle:.0%} Uebereinstimmung."
-        )
+        return _t(
+            "{n} Eintraege geprueft ({paare} Paare verglichen) - "
+            "nichts ueber {schwelle:.0%} Uebereinstimmung.",
+            n=len(zeilen), paare=len(kandidaten), schwelle=schwelle)
 
     # Zusammenhaengende Gruppen bilden
     eltern = {}
@@ -1425,16 +1534,18 @@ def verdichten(marke: str = "", art: str = "alle", schwelle: float = 0.5, gruppe
             haufen.setdefault(wurzel(x), set()).add(x)
 
     text = {r[0]: (r[1], r[2], r[3]) for r in zeilen}
-    aus = [f"{len(zeilen)} Eintraege, {len(kandidaten)} Paare verglichen, "
-           f"{len(haufen)} Gruppe(n) ab {schwelle:.0%} Uebereinstimmung:"]
+    aus = [_t("{n} Eintraege, {paare} Paare verglichen, "
+              "{gruppen} Gruppe(n) ab {schwelle:.0%} Uebereinstimmung:",
+              n=len(zeilen), paare=len(kandidaten), gruppen=len(haufen), schwelle=schwelle)]
     for k, ids in sorted(haufen.items(), key=lambda x: -len(x[1]))[:gruppen]:
         beste = max(w for w, a, b in paare if a in ids or b in ids)
-        aus.append(f"\nGruppe ({len(ids)} Eintraege, bis {beste:.0%} deckungsgleich):")
+        aus.append(_t("\nGruppe ({n} Eintraege, bis {beste:.0%} deckungsgleich):",
+                      n=len(ids), beste=beste))
         for i in sorted(ids):
             ts, inhalt, marke = text[i]
             aus.append(f"  {_zeile(i, ts, inhalt, marke, arten[i], voll=False)}")
-    aus.append("\nZum Verdichten: neuen Eintrag schreiben und die alten per "
-               "remember(..., ersetzt=\"...\") abloesen.")
+    aus.append(_t("\nZum Verdichten: neuen Eintrag schreiben und die alten per "
+                  "remember(..., ersetzt=\"...\") abloesen."))
     return "\n".join(aus)
 
 
@@ -1470,17 +1581,17 @@ def pruefe(ids: str) -> str:
         ids: Two or more entry ids, e.g. "249,255".
     """
     if faktencheck is None:
-        return "Kein Faktencheck-Modul vorhanden (faktencheck.py fehlt oder ist fehlerhaft)."
+        return _t("Kein Faktencheck-Modul vorhanden (faktencheck.py fehlt oder ist fehlerhaft).")
     gewollt = []
     try:
         genannt = _ids(ids)
     except ValueError as exc:
-        return f"Fehler: {exc}"
+        return _t("Fehler: {exc}", exc=exc)
     for i in genannt:
         if i not in gewollt:
             gewollt.append(i)
     if len(gewollt) < 2:
-        return "Fehler: mindestens zwei Ids noetig, z.B. pruefe(\"249,255\")."
+        return _t("Fehler: mindestens zwei Ids noetig, z.B. pruefe(\"249,255\").")
 
     conn = _connect()
     try:
@@ -1495,7 +1606,8 @@ def pruefe(ids: str) -> str:
     fehlt = [i for i in gewollt if i not in text]
     da = [i for i in gewollt if i in text]
     if len(da) < 2:
-        return f"Zu wenige vorhandene Eintraege: {', '.join('#'+str(i) for i in fehlt)} gibt es nicht."
+        return _t("Zu wenige vorhandene Eintraege: {ids} gibt es nicht.",
+                  ids=", ".join("#" + str(i) for i in fehlt))
 
     alle = [(a, b) for n, a in enumerate(da) for b in da[n + 1:]]
     # Zeichengleiche Notizen gar nicht erst fragen - das Modell antwortet auch
@@ -1515,40 +1627,43 @@ def pruefe(ids: str) -> str:
         try:
             gesagt = faktencheck.urteile(richtungen, budget=len(richtungen) * 25)
         except Exception as exc:
-            return f"Faktencheck nicht moeglich: {exc}"
+            return _t("Faktencheck nicht moeglich: {exc}", exc=exc)
         if not any(gesagt):
-            return (
-                f"Kein Urteil - Geraet nicht erreichbar oder zu langsam ({faktencheck.zustand()}). "
-                "Am Memory selbst aendert das nichts."
-            )
+            return _t(
+                "Kein Urteil - Geraet nicht erreichbar oder zu langsam ({zustand}). "
+                "Am Memory selbst aendert das nichts.", zustand=faktencheck.zustand())
     beidseitig = {p: (gesagt[2 * i], gesagt[2 * i + 1]) for i, p in enumerate(zu_fragen)}
 
     aus = []
     for a, b in alle:
         if (a, b) in gleich:
-            aus.append(
-                f"#{a} <-> #{b}: als Notiz zeichengleich, nicht beurteilbar - "
+            aus.append(_t(
+                "#{a} <-> #{b}: als Notiz zeichengleich, nicht beurteilbar - "
                 "entweder Dublette (dann verdichten), oder der Unterschied steckt "
-                f"jenseits der ersten {faktencheck.MAXZ} Zeichen und das Modell sieht ihn nicht"
-            )
+                "jenseits der ersten {maxz} Zeichen und das Modell sieht ihn nicht",
+                a=a, b=b, maxz=faktencheck.MAXZ))
         elif (a, b) not in beidseitig:
-            aus.append(f"#{a} <-> #{b}: nicht gefragt (Deckel bei {DECKEL_PRUEFE} Paaren je Aufruf)")
+            aus.append(_t("#{a} <-> #{b}: nicht gefragt (Deckel bei {deckel} Paaren je Aufruf)",
+                          a=a, b=b, deckel=DECKEL_PRUEFE))
         else:
             hin, her = beidseitig[(a, b)]
+            hin, her = _urteil_aus(hin), _urteil_aus(her)
             if hin and her:
                 aus.append(
                     f"#{a} <-> #{b}: {hin}"
                     if hin == her
-                    else f"#{a} <-> #{b}: uneinig - {hin} in der einen, {her} in der anderen Richtung"
+                    else _t("#{a} <-> #{b}: uneinig - {hin} in der einen, {her} in der anderen Richtung",
+                            a=a, b=b, hin=hin, her=her)
                 )
             elif hin or her:
-                aus.append(f"#{a} <-> #{b}: {hin or her}, aber nur eine Richtung geprueft - unbestaetigt")
+                aus.append(_t("#{a} <-> #{b}: {urteil}, aber nur eine Richtung geprueft - unbestaetigt",
+                              a=a, b=b, urteil=hin or her))
             else:
-                aus.append(f"#{a} <-> #{b}: kein Urteil")
+                aus.append(_t("#{a} <-> #{b}: kein Urteil", a=a, b=b))
     if fehlt:
-        aus.append(f"Nicht vorhanden: {', '.join('#'+str(i) for i in fehlt)}")
+        aus.append(_t("Nicht vorhanden: {ids}", ids=", ".join("#" + str(i) for i in fehlt)))
     if any(gesagt):
-        aus.append("Einschaetzung eines kleinen Sprachmodells, kein Befund - selbst nachsehen.")
+        aus.append(_t("Einschaetzung eines kleinen Sprachmodells, kein Befund - selbst nachsehen."))
     return "\n".join(aus)
 
 
@@ -1566,16 +1681,16 @@ def vergessen(ids: str, grund: str = "") -> str:
     try:
         _ids(ids)
     except ValueError as exc:
-        return f"Fehler: {exc}"
+        return _t("Fehler: {exc}", exc=exc)
     conn = _connect()
     try:
-        getan = _veralten(conn, ids, grund=grund.strip() or "veraltet")
+        getan = _veralten(conn, ids, grund=grund.strip() or _t("veraltet"))
         conn.commit()
     finally:
         conn.close()
     if not getan:
-        return "Keine passenden Ids gefunden - nichts geaendert."
-    return f"Als veraltet markiert: {', '.join('#'+str(i) for i in getan)}"
+        return _t("Keine passenden Ids gefunden - nichts geaendert.")
+    return _t("Als veraltet markiert: {ids}", ids=", ".join("#" + str(i) for i in getan))
 
 
 @_lesend
@@ -1620,12 +1735,12 @@ def recall(
     """
     query = query.strip()
     if not query:
-        return "Fehler: 'query' ist leer."
+        return _t("Fehler: 'query' ist leer.")
     limit = max(1, min(int(limit), 50))
     try:
         filter_ = _filter(art=art, mit_veraltet=mit_veraltet)
     except ValueError as exc:
-        return f"Fehler: {exc}"
+        return _t("Fehler: {exc}", exc=exc)
 
     _frage_vormerken(query)
     conn = _connect()
@@ -1662,21 +1777,20 @@ def recall(
         conn.close()
 
     if fehler:
-        return (
-            f"Ungueltige Suchanfrage: {fehler}\n"
+        return _t(
+            "Ungueltige Suchanfrage: {fehler}\n"
             'Tipp: Sonderzeichen in doppelte Anfuehrungszeichen setzen, '
-            'z.B. recall(query=\'"C++"\'). Operatoren: AND, OR, NOT, praefix*, "phrase".'
-        )
+            'z.B. recall(query=\'"C++"\'). Operatoren: AND, OR, NOT, praefix*, "phrase".',
+            fehler=fehler)
     in_marke = f" in {marke}" if _marken(marke) else ""
     if not rows:
-        leer = f"Keine Treffer fuer: {query}{in_marke}"
+        leer = _t("Keine Treffer fuer: {query}{in_marke}", query=query, in_marke=in_marke)
         if in_marke:
-            leer += " - ohne marke= noch einmal probieren, die Marke koennte anders heissen (themen())."
+            leer += _t(" - ohne marke= noch einmal probieren, die Marke koennte anders heissen (themen()).")
         if zurueckgehalten:
-            leer += (
-                f' - aber {zurueckgehalten} in der ausgeblendeten Chronik.'
-                ' art="verlauf" holt sie.'
-            )
+            leer += _t(
+                ' - aber {n} in der ausgeblendeten Chronik.'
+                ' art="verlauf" holt sie.', n=zurueckgehalten)
         return leer
 
     lines = []
@@ -1684,19 +1798,20 @@ def recall(
         vermerk = ""
         if rid in status:
             durch, grund = status[rid]
-            vermerk = f" [VERALTET: {grund}" + (f", ersetzt durch #{durch}" if durch else "") + "]"
+            vermerk = _veraltet_vermerk(grund, durch)
         vermerk += ketten.get(rid, "")
         lines.append(_zeile(rid, ts, content, tags, art, voll, vermerk))
-    kopf = f"{len(lines)} Treffer fuer '{query}'{in_marke}{hinweis}"
+    kopf = _t("{n} Treffer fuer '{query}'{in_marke}{hinweis}",
+              n=len(lines), query=query, in_marke=in_marke, hinweis=hinweis)
     if zurueckgehalten:
-        kopf += f", {zurueckgehalten} in der Chronik ausgeblendet (art=\"verlauf\")"
+        kopf += _t(', {n} in der Chronik ausgeblendet (art="verlauf")', n=zurueckgehalten)
     if not voll:
-        kopf += ' - Vorschau, Volltext per zeige("' + ",".join(str(r[0]) for r in rows[:2]) + '")'
+        kopf += _t(' - Vorschau, Volltext per zeige("{ids}")',
+                   ids=",".join(str(r[0]) for r in rows[:2]))
     aus = kopf + ":\n" + "\n".join(lines)
     if draussen:
-        aus += (f"\nAusserhalb von {marke.strip()} passt besser: "
-                + _zeile(*draussen, voll=False)
-                + " - ohne marke= noch einmal probieren.")
+        aus += _t("\nAusserhalb von {marke} passt besser: {zeile} - ohne marke= noch einmal probieren.",
+                  marke=marke.strip(), zeile=_zeile(*draussen, voll=False))
     return aus
 
 
@@ -1748,7 +1863,8 @@ _OFFENE_FRAGEN: list = []
 # enthaelt. Ohne diese Probe sammelt die Rueckkopplung auch Themenwechsel ein -
 # ein `zeige`, das nach der Frage nur noch etwas anderes nachschlaegt.
 _FUELLWORT = set("""der die das und oder in im von zu fuer für mit auf ist sind wie was
-warum wo wer den dem des ein eine einen bei aus nach vor als auch nur noch""".split())
+warum wo wer den dem des ein eine einen bei aus nach vor als auch nur noch
+the and for with from that this what which where when have does into about""".split())
 _INHALTSWORT = re.compile(r"[\wÄÖÜäöüß]{4,}", re.UNICODE)
 
 
@@ -1925,7 +2041,7 @@ def _kaskade(conn, query: str, limit: int, filter_=("", ()), marke: str = ""):
     gesehen = {z[0] for z in vorn}
     rows = vorn + [r for r in rows if r[0] not in gesehen]
     return (_ketten_entdoppeln(conn, rows, limit), None,
-            hinweis + " (+ schon einmal so gesucht)")
+            hinweis + _t(" (+ schon einmal so gesucht)"))
 
 
 def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()),
@@ -1959,7 +2075,7 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()),
         # natuerlich formulierten Fragen liefen so ins Leere. Also dieselbe
         # Frage als Wortfolge durch die Kaskade - gueltige Syntax bleibt, was
         # sie war.
-        als_frage = " (Sonderzeichen ignoriert - keine gueltige FTS5-Syntax)"
+        als_frage = _t(" (Sonderzeichen ignoriert - keine gueltige FTS5-Syntax)")
 
     terme = _terme(query)
     if not terme:
@@ -1988,7 +2104,7 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()),
         oder = " OR ".join(f'{{content tags}} : "{t}"' for t in terme)
         rows, fehler = _suche(conn, _mit_marke(oder, kl), holen, filter_)
         if rows:
-            hinweis = " (ODER - kein Eintrag enthaelt alle Begriffe)" + als_frage
+            hinweis = _t(" (ODER - kein Eintrag enthaelt alle Begriffe)") + als_frage
 
     # Stufe 4: exakte Treffer behalten den Vortritt, werden aber auf einen
     # Teil der Plaetze gedeckelt, damit die Morphologie ueberhaupt sichtbar
@@ -2022,7 +2138,7 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()),
                 aus.append(r)
     neu = [r for r in aus[:holen] if r not in rows]
     if neu:
-        hinweis += " (+ Stamm-/Wortteiltreffer)"
+        hinweis += _t(" (+ Stamm-/Wortteiltreffer)")
     return aus[:holen], None, hinweis
 
 
@@ -2076,7 +2192,7 @@ def themen(marke: str = "", limit: int = 0, seite: int = 1, alle: bool = False) 
     finally:
         conn.close()
     if not zeilen:
-        return "Das Gedaechtnis ist leer."
+        return _t("Das Gedaechtnis ist leer.")
 
     sorten = list(ARTEN) + [UNSORTIERT]
     gesucht = _marken(marke)
@@ -2089,12 +2205,15 @@ def themen(marke: str = "", limit: int = 0, seite: int = 1, alle: bool = False) 
                 tafel.setdefault(m, dict.fromkeys(sorten, 0))[arten[rid]] += 1
         geordnet = sorted(tafel.items(), key=lambda x: (-sum(x[1].values()), x[0]))
         breite = max(len(m) for m, _ in geordnet[:limit])
+        breite = max(breite, len(_t("Marke")))
         aus = [
-            f"{len(tafel)} Marken ueber {len(zeilen)} lebende Eintraege. "
-            f'Titelindex eines Projekts per themen("<marke>"), '
-            f'darin suchen per recall(query, marke="<marke>").',
+            _t('{marken} Marken ueber {n} lebende Eintraege. '
+               'Titelindex eines Projekts per themen("<marke>"), '
+               'darin suchen per recall(query, marke="<marke>").',
+               marken=len(tafel), n=len(zeilen)),
             "",
-            f"{'Marke':<{breite}} {'ges.':>5}  " + " ".join(f"{k[:6]:>6}" for k in sorten),
+            f"{_t('Marke'):<{breite}} {_t('ges.'):>5}  "
+            + " ".join(f"{_art_aus(k)[:6]:>6}" for k in sorten),
         ]
         for m, c in geordnet[:limit]:
             aus.append(
@@ -2103,7 +2222,8 @@ def themen(marke: str = "", limit: int = 0, seite: int = 1, alle: bool = False) 
             )
         rest = len(tafel) - min(limit, len(tafel))
         if rest:
-            aus.append(f"... und {rest} weitere Marken mit weniger Eintraegen (limit= erhoeht).")
+            aus.append(_t("... und {rest} weitere Marken mit weniger Eintraegen (limit= erhoeht).",
+                          rest=rest))
         return "\n".join(aus)
 
     treffer = [z for z in zeilen if set(_marken(z[3])) & set(gesucht)]
@@ -2119,25 +2239,27 @@ def themen(marke: str = "", limit: int = 0, seite: int = 1, alle: bool = False) 
         for g in gesucht:
             nah.update(difflib.get_close_matches(g, alle_marken, n=4, cutoff=0.7))
         nah = sorted(nah)
-        hinweis = f" Gemeint vielleicht: {', '.join(nah[:8])}?" if nah else ""
-        return f"Keine Eintraege unter der Marke {marke}.{hinweis} Alle Marken: themen()."
+        hinweis = _t(" Gemeint vielleicht: {nah}?", nah=", ".join(nah[:8])) if nah else ""
+        return _t("Keine Eintraege unter der Marke {marke}.{hinweis} Alle Marken: themen().",
+                  marke=marke, hinweis=hinweis)
 
     def titelzeile(z, mit_art: bool) -> str:
         rid, ts, content, tags, _art = z
         weitere = [m for m in _marken(tags) if m not in gesucht]
         dazu = f"  +{','.join(weitere)}" if weitere else ""
-        sorte = f"[{arten[rid]}] " if mit_art else ""
+        sorte = f"[{_art_aus(arten[rid])}] " if mit_art else ""
         return f"  #{rid:<5} {ts[:10]}  {sorte}{_titel(content, 76)}{dazu}"
 
-    kopf = (f"{len(treffer)} Eintraege unter {', '.join(gesucht)} "
-            f'- Volltext per zeige("<id>"), suchen per recall(query, marke="{gesucht[0]}").')
+    kopf = _t('{n} Eintraege unter {marken} '
+              '- Volltext per zeige("<id>"), suchen per recall(query, marke="{erste}").',
+              n=len(treffer), marken=", ".join(gesucht), erste=gesucht[0])
     if alle:
         aus = [kopf]
         for sorte in sorten:
             gruppe = sorted((z for z in treffer if arten[z[0]] == sorte),
                             key=lambda z: (z[1], z[0]), reverse=True)
             if gruppe:
-                aus.append(f"\n{sorte} ({len(gruppe)}):")
+                aus.append(f"\n{_art_aus(sorte)} ({len(gruppe)}):")
                 aus.extend(titelzeile(z, mit_art=False) for z in gruppe)
         return "\n".join(aus)
 
@@ -2149,24 +2271,25 @@ def themen(marke: str = "", limit: int = 0, seite: int = 1, alle: bool = False) 
     geordnet = sorted(treffer, key=lambda z: (z[1], z[0]), reverse=True)
     seiten = -(-len(geordnet) // limit)
     if seite > seiten:
-        return (f"Seite {seite} gibt es nicht - {len(treffer)} Eintraege unter "
-                f"{', '.join(gesucht)} sind {seiten} Seite(n).")
+        return _t("Seite {seite} gibt es nicht - {n} Eintraege unter {marken} sind {seiten} Seite(n).",
+                  seite=seite, n=len(treffer), marken=", ".join(gesucht), seiten=seiten)
     ab = (seite - 1) * limit
     blatt = geordnet[ab:ab + limit]
     verteilung = ", ".join(
-        f"{sorte} {n}" for sorte in sorten
+        f"{_art_aus(sorte)} {n}" for sorte in sorten
         if (n := sum(1 for z in treffer if arten[z[0]] == sorte)))
-    aus = [kopf, f"Nach Art: {verteilung}.", ""]
+    aus = [kopf, _t("Nach Art: {verteilung}.", verteilung=verteilung), ""]
     if seiten == 1:
-        aus.append("Juengste zuerst:")
+        aus.append(_t("Juengste zuerst:"))
     else:
-        aus.append(f"Seite {seite} von {seiten}, juengste zuerst "
-                   f"(Eintrag {ab + 1}-{ab + len(blatt)}):")
+        aus.append(_t("Seite {seite} von {seiten}, juengste zuerst (Eintrag {von}-{bis}):",
+                      seite=seite, seiten=seiten, von=ab + 1, bis=ab + len(blatt)))
     aus.extend(titelzeile(z, mit_art=True) for z in blatt)
     rest = len(geordnet) - ab - len(blatt)
     if rest:
-        aus.append(f'{rest} aeltere nicht gezeigt - themen("{marke.strip()}", seite={seite + 1}) '
-                   f"blaettert weiter, alle=True holt den ganzen Index.")
+        aus.append(_t('{rest} aeltere nicht gezeigt - themen("{marke}", seite={naechste}) '
+                      "blaettert weiter, alle=True holt den ganzen Index.",
+                      rest=rest, marke=marke.strip(), naechste=seite + 1))
     return "\n".join(aus)
 
 
@@ -2190,9 +2313,9 @@ def zeige(ids: str, voll: bool = False) -> str:
     try:
         gewollt = _ids(ids)
     except ValueError as exc:
-        return f"Fehler: {exc}"
+        return _t("Fehler: {exc}", exc=exc)
     if not gewollt:
-        return "Fehler: keine Id angegeben, z.B. zeige(\"376,481\")."
+        return _t("Fehler: keine Id angegeben, z.B. zeige(\"376,481\").")
     gewollt = list(dict.fromkeys(gewollt))
 
     conn = _connect()
@@ -2221,7 +2344,7 @@ def zeige(ids: str, voll: bool = False) -> str:
         text = ""
         if rid in status:
             durch, grund = status[rid]
-            text = f" [VERALTET: {grund}" + (f", ersetzt durch #{durch}" if durch else "") + "]"
+            text = _veraltet_vermerk(grund, durch)
         return text + ketten.get(rid, "")
 
     # Einheiten in der verlangten Reihenfolge. Die Stuecke EINES zerschnittenen
@@ -2250,7 +2373,7 @@ def zeige(ids: str, voll: bool = False) -> str:
         verbraucht += gross
         for i in einheit:
             if i not in gefunden:
-                aus.append(f"#{i} - kein solcher Eintrag.")
+                aus.append(_t("#{i} - kein solcher Eintrag.", i=i))
                 continue
             rid, ts, content, tags, _art = gefunden[i]
             # Ein einzelner Eintrag ueber dem Deckel ist der einzige Fall, in
@@ -2260,19 +2383,20 @@ def zeige(ids: str, voll: bool = False) -> str:
                 schnitt = content.rfind("\n", 0, DECKEL_ZEIGE)
                 schnitt = schnitt if schnitt > DECKEL_ZEIGE // 2 else DECKEL_ZEIGE
                 content = (content[:schnitt].rstrip()
-                           + f"\n[... gekuerzt: {schnitt} von {len(content)} Zeichen gezeigt"
-                           f' - ganz per zeige("{rid}", voll=True)]')
+                           + _t('\n[... gekuerzt: {schnitt} von {ganz} Zeichen gezeigt'
+                                ' - ganz per zeige("{rid}", voll=True)]',
+                                schnitt=schnitt, ganz=len(content), rid=rid))
             aus.append(_zeile(rid, ts, content, tags, arten[rid], voll=True, vermerk=vermerk(rid)))
     text = "\n\n".join(aus)
     if not offen:
         return text
     fehlt = [i for i in offen if i not in gefunden]
     da = [i for i in offen if i in gefunden]
-    kopf = (f"{len(offen)} weitere verlangt, nicht gezeigt (Deckel {DECKEL_ZEIGE} Zeichen"
-            f' je Aufruf) - weiter mit zeige("{",".join(map(str, offen))}"),'
-            " alles auf einmal mit voll=True:")
+    kopf = _t('{n} weitere verlangt, nicht gezeigt (Deckel {deckel} Zeichen'
+              ' je Aufruf) - weiter mit zeige("{ids}"), alles auf einmal mit voll=True:',
+              n=len(offen), deckel=DECKEL_ZEIGE, ids=",".join(map(str, offen)))
     rest = [_zeile(*gefunden[i][:4], arten[i], voll=False, vermerk=vermerk(i)) for i in da]
-    rest += [f"#{i} - kein solcher Eintrag." for i in fehlt]
+    rest += [_t("#{i} - kein solcher Eintrag.", i=i) for i in fehlt]
     return text + "\n\n" + kopf + "\n" + "\n".join(rest)
 
 
@@ -2294,19 +2418,19 @@ def einordnen(ids: str, art: str) -> str:
     try:
         gewaehlt = _arten_lesen(art)
     except ValueError as exc:
-        return f"Fehler: {exc}"
+        return _t("Fehler: {exc}", exc=exc)
     if gewaehlt in (None, "alle") or len(gewaehlt) != 1:
-        return (
+        return _t(
             "Fehler: genau eine Art angeben. Moeglich: "
-            f"{', '.join(ARTEN)}, {UNSORTIERT} (nimmt die Einordnung zurueck)."
-        )
+            "{arten}, {unsortiert} (nimmt die Einordnung zurueck).",
+            arten=_artenliste(), unsortiert=_art_aus(UNSORTIERT))
     ziel = gewaehlt[0]
     try:
         gewollt = _ids(ids)
     except ValueError as exc:
-        return f"Fehler: {exc}"
+        return _t("Fehler: {exc}", exc=exc)
     if not gewollt:
-        return "Fehler: keine Id angegeben."
+        return _t("Fehler: keine Id angegeben.")
 
     conn = _connect()
     try:
@@ -2330,11 +2454,11 @@ def einordnen(ids: str, art: str) -> str:
         conn.close()
 
     if not getan:
-        return "Keine passenden Ids gefunden - nichts geaendert."
-    aus = f"{ziel}: {', '.join('#'+str(i) for i in getan)}"
+        return _t("Keine passenden Ids gefunden - nichts geaendert.")
+    aus = f"{_art_aus(ziel)}: {', '.join('#'+str(i) for i in getan)}"
     if fehlt:
-        aus += f" (nicht gefunden: {', '.join('#'+str(i) for i in fehlt)})"
-    return aus + f"\nNoch {offen} Eintraege ohne Art."
+        aus += _t(" (nicht gefunden: {ids})", ids=", ".join("#" + str(i) for i in fehlt))
+    return aus + _t("\nNoch {n} Eintraege ohne Art.", n=offen)
 
 
 def _schema_entrumpeln() -> int:
@@ -2374,6 +2498,26 @@ def _gast_einrichten() -> None:
             server._tool_manager.remove_tool(werkzeug.name)
 
 
+def _englisch_einrichten() -> None:
+    """MEMORY_LANG=en: die englischen Huellen statt der deutschen Werkzeuge anbieten.
+
+    Austauschen statt dazustellen - beide Saetze zugleich kosteten in jeder
+    Sitzung die doppelte Werkzeugbeschreibung und luden zum Mischen ein.
+    """
+    # Als Skript gestartet heisst dieses Modul `__main__`. Die Huellen holen
+    # sich `memory_server` - ohne den Eintrag hier luede Python die Datei ein
+    # zweites Mal, und deren Start griffe auf das halb geladene werkzeuge_en zu
+    # (AttributeError: WERKZEUGE). Der Server startete mit MEMORY_LANG=en nicht.
+    sys.modules.setdefault("memory_server", sys.modules[__name__])
+    import werkzeuge_en
+    for werkzeug in list(server._tool_manager.list_tools()):
+        server._tool_manager.remove_tool(werkzeug.name)
+    for fn in werkzeuge_en.WERKZEUGE:
+        server.tool()(fn)
+
+
+if _en():
+    _englisch_einrichten()
 _schema_entrumpeln()
 
 if __name__ == "__main__":

@@ -18,6 +18,8 @@ Nach jedem Eingriff laufen lassen, der `content` oder `tags` ausserhalb von
 
 import sys
 
+import memory_server
+import morphologie
 from memory_server import (
     _connect, _ketten_nachtragen, _marken_nachtragen, _nachziehen,
     _vokabel_nachtragen,
@@ -26,7 +28,17 @@ from memory_server import (
 
 def main() -> int:
     probe = "--probe" in sys.argv
-    conn = _connect()
+    # Rechnet ohnehin alles in der Sprache des Servers (MEMORY_LANG) neu, darf
+    # also auch die Sprachmarke der Datei umschreiben. Mit --probe wird sie
+    # wie alles andere zurueckgerollt.
+    # Zurueckgesetzt wird im finally: wer main() aus einem laufenden Prozess
+    # ruft (die Tests), behielte sonst die Erlaubnis fuer jede spaetere Verbindung.
+    memory_server.SPRACHE_UMSTELLEN = True
+    try:
+        conn = _connect()
+    finally:
+        memory_server.SPRACHE_UMSTELLEN = False
+    print(f"Sprache: {morphologie.SPRACHE}")
     try:
         # ZUERST das Woerterbuch: `_nachziehen` zerlegt die Komposita dagegen,
         # ein veraltetes Verzeichnis wuerde also in die Spalten geschrieben.

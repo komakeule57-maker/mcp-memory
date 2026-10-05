@@ -139,6 +139,8 @@ not need them. The tools are then called `mcp__memory-b__recall` and so on.
 | `pruefe(ids)` | opt-in: have a language model judge contradiction vs. newer state |
 
 Full reference with parameters and behavior: [docs/TOOLS.md](docs/TOOLS.md).
+With `MEMORY_LANG=en` the same tools come with English names and parameters,
+see [A Note on Language](#a-note-on-language).
 
 ## Some Numbers
 
@@ -209,25 +211,44 @@ published, and getting thinner.
 
 ## A Note on Language
 
-This documentation is in English, the tool is not. Every string the server
-prints or returns stays German: status messages, the kind vocabulary
+German is the default: tool names, status messages and the kind vocabulary
 (`schnittstelle`, `fallstrick`, `entscheidung`, `messwert`, `arbeitsweise`,
-`verlauf`, `gemischt`) and the fact-check verdicts
-(`WIDERSPRUCH`/contradiction, `FORTSCHRITT`/progress,
-`UNABHAENGIG`/independent, `uneinig`/disputed).
+`verlauf`, `gemischt`) are German, and the search stems German and splits
+German compounds.
 
-That is not an oversight. Those words are a fixed vocabulary that several
-scripts compare against by exact string, and the fact-check prompt is
-calibrated word for word — adding one sentence to it once halved the
-accuracy. Example blocks in these docs therefore show real, unmodified
-output, glossed in English where it first appears.
+**English mode:** start the server with `MEMORY_LANG=en`. Then
+
+- the tools are `remember(text, tags, kind, supersedes)`,
+  `recall(query, limit, kind, tag, full, include_superseded)`, `show(ids)`,
+  `topics(tag, limit)`, `forget(ids, reason)`, `classify(ids, kind)`,
+  `consolidate(tag, kind, threshold, groups)` and `check(ids)`,
+- the kinds are `interface`, `pitfall`, `decision`, `measurement`,
+  `workflow`, `history`, `unsorted`,
+- every message is English,
+- the search uses a small English suffix stemmer ("configured" finds
+  "configuring") instead of the German one, and does not split compounds.
+
+The database itself does not change: kinds are always stored under their
+German names and translated at the border, and German kind names are
+accepted in both modes. What does change is the stem index, so the file
+records the language it was built in and the server refuses to open it
+with the other one. To switch an existing memory, back it up and run
+`MEMORY_LANG=en python3 nachziehen.py` once.
+
+Not covered by the switch: the fact-check prompt stays German (it is
+calibrated word for word, and adding one sentence once halved its
+accuracy; only its verdicts are shown in English), and so do the import
+script and the measurement reports. The English stemmer is new and has
+**not** been measured on real questions the way the German search has.
 
 ## Files
 
 | | |
 |---|---|
 | `memory_server.py` | MCP server, eight tools, search cascade, schema, migrations |
-| `morphologie.py` | stemmer and compound splitter |
+| `morphologie.py` | stemmer and compound splitter (German; small English stemmer for `MEMORY_LANG=en`) |
+| `werkzeuge_en.py` | the English tool surface for `MEMORY_LANG=en` |
+| `texte_en.py` | English messages, keyed by the German text |
 | `nachziehen.py` | recomputes `stems`/`teile` and refreshes the tag directory |
 | `faktencheck.py` | opt-in second opinion via any OpenAI-compatible model (off unless configured) |
 | `pruefstand_fc.py` | measures the fact check against gold labels from the dataset |

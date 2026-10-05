@@ -34,6 +34,7 @@ from pathlib import Path
 os.environ["MEMORY_FC_AUS"] = "1"
 
 import import_memos as im  # noqa: E402
+import morphologie  # noqa: E402
 import memory_server as ms  # noqa: E402
 import nachziehen  # noqa: E402
 import pruefstand_fc  # noqa: E402
@@ -948,6 +949,8 @@ def test_jedes_skript_laeuft_trocken_gegen_eine_stand_5_datenbank():
         "memory_server.py": "der Server selbst; die 30 Faelle darueber sind seine Probe",
         "morphologie.py": "rechnet auf Zeichenketten, oeffnet nie eine Datenbank",
         "faktencheck.py": "spricht HTTP mit dem Board, kein SQL",
+        "texte_en.py": "nur die Uebersetzungstabelle, kein Code",
+        "werkzeuge_en.py": "duenne Huellen um die Werkzeuge, siehe die _en-Faelle",
         "zg.py": "fremdes Werkzeug (ZeroGit-Sicherung), gehoert nicht zum Projekt"
                  " und spricht beim Trockenlauf das Netz an",
         Path(__file__).name: "diese Datei",
@@ -1316,6 +1319,153 @@ def test_namen_kommen_nur_vor_nummern():
     assert ms._mit_namen("siehe [[2382]]") == f"siehe [[{n}#2382]]"
     for bleibt in ("&#72;", "Farbe #202020", f"{n}#72", "a#72", "## Kopf", "Nr. 72"):
         assert ms._mit_namen(bleibt) == bleibt, bleibt
+
+
+# --------------------------------------------------------------------------
+# Englisch (MEMORY_LANG=en)
+# --------------------------------------------------------------------------
+@contextlib.contextmanager
+def _englisch():
+    """Schaltet fuer einen Fall auf Englisch - und sicher zurueck, sonst laufen
+    alle folgenden Faelle mit englischem Stemmer."""
+    morphologie.SPRACHE = "en"
+    try:
+        yield
+    finally:
+        morphologie.SPRACHE = "de"
+
+
+def test_en_jede_meldung_hat_eine_uebersetzung():
+    """Der Schluessel ist der deutsche Text selbst. Wer eine Meldung aendert und
+    die Tabelle vergisst, bekommt im englischen Betrieb lautlos Deutsch -
+    darum hier jeder `_t("...")` aus dem Quelltext gegen die Tabelle, samt
+    gleichen Platzhaltern."""
+    import ast
+    import string
+    from texte_en import TEXTE_EN
+    baum = ast.parse(Path(ms.__file__).read_text(encoding="utf-8"))
+    schluessel = {
+        k.args[0].value for k in ast.walk(baum)
+        if isinstance(k, ast.Call) and getattr(k.func, "id", None) == "_t"
+        and isinstance(k.args[0], ast.Constant)
+    } | {v for v in ms._VERMERKE.values()}
+
+    def felder(t):
+        return {f for _, f, _, _ in string.Formatter().parse(t) if f}
+
+    fehlt = sorted(k for k in schluessel if k not in TEXTE_EN)
+    assert not fehlt, f"ohne Uebersetzung: {fehlt}"
+    ungleich = [k for k in schluessel if felder(k) != felder(TEXTE_EN[k])]
+    assert not ungleich, f"Platzhalter weichen ab: {ungleich}"
+    verwaist = sorted(k for k in TEXTE_EN if k not in schluessel)
+    assert not verwaist, f"Uebersetzung ohne Meldung: {verwaist}"
+
+
+def test_en_stemmer_fuehrt_formen_zusammen():
+    """Der englische Stemmer muss nur kollidieren, nicht richtig sein."""
+    from morphologie import stem_en
+    for gruppe in (("configured", "configuring", "configures", "configuration"),
+                   ("studies", "studied", "studying", "study"),
+                   ("stopped", "stopping", "stops", "stop"),
+                   ("caches", "cached", "caching", "cache"),
+                   ("bugs", "bug"), ("happiness", "happy")):
+        staemme = {stem_en(w) for w in gruppe}
+        assert len(staemme) == 1, (gruppe, staemme)
+    for bleibt in ("status", "analysis", "class"):
+        assert stem_en(bleibt) == bleibt, bleibt
+
+
+def test_en_werkzeuge_sprechen_englisch_und_finden_gebeugt():
+    """Englische Namen, Parameter, Arten und Meldungen - und die Datenbank
+    speichert trotzdem die deutsche Art, damit Bestand und Filter gleich bleiben."""
+    import werkzeuge_en as en
+    with _englisch():
+        aus = en.remember("The cache gets invalidated on every restart.",
+                          tags="spaceship", kind="pitfall")
+        assert aus.startswith("Stored #1") and "as pitfall" in aus, aus
+        aus = en.remember("Restarts take nine seconds.", tags="spaceship",
+                          kind="fallstrick")  # deutscher Name geht weiterhin
+        assert "as pitfall" in aus, aus
+        treffer = en.recall("invalidating caches")
+        assert "hits for" in treffer and "[pitfall]" in treffer, treffer
+        assert "invalidated" in treffer and 'show("' in treffer, treffer
+        assert "(+ stem matches)" in treffer, treffer
+        assert "Unknown kind: gibberish" in en.recall("cache", kind="gibberish")
+        assert "(pitfall, spaceship)" in en.show("1")
+        assert "pitfall (2):" in en.topics("spaceship", all=True)
+        assert "By kind: pitfall 2." in en.topics("spaceship")
+        assert "Tag" in en.topics() and "No entries under the tag" in en.topics("spacship")
+        assert "Marked as superseded: #2" in en.forget("2", reason="obsolete")
+        assert "SUPERSEDED: obsolete" in en.recall("restarts", include_superseded=True)
+        assert en.classify("1", kind="decision").startswith("decision: #1")
+    with sqlite3.connect(ms.DB_PATH) as conn:
+        assert conn.execute("SELECT art FROM eintrag WHERE id = 1").fetchone()[0] == "entscheidung"
+
+
+def test_en_server_bietet_nur_englische_werkzeuge():
+    """Austausch statt Nebeneinander: beide Saetze zugleich kosten die doppelte
+    Beschreibung in jeder Sitzung."""
+    import subprocess
+    probe = ("import memory_server as ms; "
+             "print(sorted(t.name for t in ms.server._tool_manager.list_tools()))")
+    umgebung = dict(os.environ, MEMORY_LANG="en")
+    namen = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                           env=umgebung, cwd=Path(__file__).resolve().parent, check=True).stdout
+    assert namen.strip() == str(sorted(["remember", "recall", "show", "topics", "consolidate",
+                                        "check", "forget", "classify"])), namen
+
+
+def test_sprachwechsel_ohne_nachziehen_wird_abgewiesen():
+    """Die Stammspalten sind beim Speichern gerechnet. Derselbe Bestand mit dem
+    anderen Stemmer passt nicht mehr zur Frage, und niemand merkt es - also
+    weist der Server ab, bis nachziehen.py in der neuen Sprache lief."""
+    ms.remember("Der Zuendschluessel liegt im Handschuhfach.", tags="auto",
+                art="schnittstelle")
+    with _englisch():
+        try:
+            ms._connect()
+        except RuntimeError as fehler:
+            assert "nachziehen.py" in str(fehler) and "'de'" in str(fehler), fehler
+        else:
+            raise AssertionError("Sprachwechsel lief ohne Nachziehen durch")
+        alt, sys.argv = sys.argv, ["nachziehen.py"]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                nachziehen.main()
+        finally:
+            sys.argv = alt
+        assert not ms.SPRACHE_UMSTELLEN, "die Erlaubnis blieb nach dem Lauf stehen"
+        conn = ms._connect()  # jetzt ohne Ausnahme
+        marke = conn.execute("SELECT wert FROM schema WHERE schluessel='sprache'").fetchone()[0]
+        stems = conn.execute("SELECT stems FROM eintrag WHERE id = 1").fetchone()[0]
+        conn.close()
+        assert marke == "en", marke
+        assert stems == morphologie.stamm_spalte(
+            "Der Zuendschluessel liegt im Handschuhfach. auto"), stems
+
+
+def test_neuer_bestand_traegt_die_sprache_des_servers():
+    """Eine leere Datei bekommt die Sprache, mit der sie angelegt wird; ein
+    Bestand von vor dem Schalter gilt als deutsch."""
+    with _englisch():
+        conn = ms._connect()
+        marke = conn.execute("SELECT wert FROM schema WHERE schluessel='sprache'").fetchone()[0]
+        conn.close()
+    assert marke == "en", marke
+
+
+def test_en_server_startet_als_skript():
+    """`python memory_server.py` mit MEMORY_LANG=en: so ist der Server eingetragen.
+    Als Modul importiert (wie in den uebrigen Tests) fiel der Fehler nicht auf."""
+    import subprocess
+    with tempfile.TemporaryDirectory() as ordner:
+        for n in ("memory_server.py", "morphologie.py", "texte_en.py", "werkzeuge_en.py"):
+            shutil.copy2(Path(ms.__file__).parent / n, Path(ordner) / n)
+        lauf = subprocess.run(
+            [sys.executable, "-B", "memory_server.py"], cwd=ordner, input="", text=True,
+            capture_output=True, timeout=60,
+            env={**os.environ, "MEMORY_LANG": "en", "MEMORY_FC_AUS": "1"})
+        assert "Traceback" not in lauf.stderr, lauf.stderr[-600:]
 
 
 def main() -> int:

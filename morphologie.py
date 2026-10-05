@@ -18,9 +18,15 @@ Nach dem Fix auf 260 echten Fragen: R@8 80,4 -> 81,2 %, also Gleichstand -
 gebaut als Fehlerbehebung, nicht als Gewinn.
 """
 
+import os
 import re
 
 _WORT = re.compile(r"\w+", re.UNICODE)
+
+# Sprache des Bestands: "de" (Vorgabe) oder "en". Bestimmt den Stemmer und ob
+# Komposita zerlegt werden. Zur Laufzeit gelesen, nicht beim Import
+# festgeschrieben - die Tests schalten um, ohne das Modul neu zu laden.
+SPRACHE = "en" if os.environ.get("MEMORY_LANG", "").strip().lower() == "en" else "de"
 
 MIN_TEIL = 5        # kuerzere Bruchstuecke sind Rauschen ("ende", "aus")
 MAX_TEIL = 12       # laengeres steht nie im Wortschatz, also nie nachzuschlagen
@@ -34,6 +40,8 @@ _ST_ENDUNG = set("bdfghklmnt")
 def stem(wort: str) -> str:
     """Reduziert eine Wortform auf ihren Stamm. Nur fuer den Index gedacht,
     das Ergebnis muss kein echtes Wort sein - es muss nur kollidieren."""
+    if SPRACHE == "en":
+        return stem_en(wort)
     w = wort.lower().replace("ß", "ss")
     if len(w) < 4:
         return w
@@ -58,6 +66,55 @@ def stem(wort: str) -> str:
         if w.endswith(suf) and len(w) - len(suf) >= 4:
             w = w[: -len(suf)]
             break
+    return w
+
+
+# Englisch: Porter in leicht, gleiches Ziel wie oben - kollidieren, nicht
+# richtig sein. "configured", "configuring", "configures", "configuration"
+# fallen alle auf "configur"; "studies", "studied", "studying" auf "studi".
+_DOPPELT_OK = set("lsz")  # "fall", "miss", "buzz": die Doppelung gehoert zum Stamm
+_ABLEITUNG_EN = (
+    ("ational", "ate"), ("ization", "ize"), ("fulness", "ful"), ("iveness", "ive"),
+    ("ousness", "ous"), ("ation", ""), ("ments", ""), ("ment", ""), ("ness", ""),
+    ("ities", ""), ("ity", ""), ("ably", "able"), ("ibly", "ible"), ("ly", ""),
+)
+
+
+def _hat_vokal(w: str) -> bool:
+    return any(c in "aeiouy" for c in w)
+
+
+def stem_en(wort: str) -> str:
+    """Englischer Stamm fuer den Index, ohne Fremdbibliothek."""
+    w = wort.lower()
+    if len(w) < 4:
+        return w
+    # Mehrzahl und 3. Person
+    if w.endswith("sses"):
+        w = w[:-2]
+    elif w.endswith("ies") and len(w) > 4:
+        w = w[:-3] + "y"
+    elif w.endswith(("ches", "shes", "xes", "zes")):
+        w = w[:-2]
+    elif w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        w = w[:-1]
+    # Verlaufsform und Vergangenheit
+    for suf in ("ing", "ed"):
+        if w.endswith(suf) and len(w) - len(suf) >= 3 and _hat_vokal(w[: -len(suf)]):
+            w = w[: -len(suf)]
+            if len(w) > 3 and w[-1] == w[-2] and w[-1] not in _DOPPELT_OK | set("aeiou"):
+                w = w[:-1]  # stopped -> stop, running -> run
+            break
+    # Ableitungen
+    for suf, ersatz in _ABLEITUNG_EN:
+        if w.endswith(suf) and len(w) - len(suf) >= 4:
+            w = w[: -len(suf)] + ersatz
+            break
+    # Endung: stummes e weg, y nach Konsonant zu i (happy/happiness -> happi)
+    if w.endswith("e") and len(w) > 4:
+        w = w[:-1]
+    if w.endswith("y") and len(w) > 3 and w[-2] not in "aeiou":
+        w = w[:-1] + "i"
     return w
 
 
@@ -104,6 +161,8 @@ def zerlege(wort: str, vokabular: set, tiefe: int = 3) -> list:
 
 def teile_spalte(text: str, vokabular: set) -> str:
     """Alle zerlegbaren Komposita eines Textes als Einzelteile."""
+    if SPRACHE == "en":
+        return ""  # englische Komposita stehen getrennt, es gibt nichts zu zerlegen
     teile = []
     for w in _WORT.findall(text):
         teile.extend(zerlege(w, vokabular))
@@ -143,6 +202,8 @@ def kandidaten(text: str) -> set:
     eine stille Luecke in der Zerlegung.
     """
     aus = set()
+    if SPRACHE == "en":
+        return aus  # ohne Zerlegung gibt es nichts nachzuschlagen
     for w in _WORT.findall(text):
         if len(w) < MIN_KOMPOSITUM or not w.isalpha():
             continue  # kuerzere ruft zerlege gar nicht erst nach
