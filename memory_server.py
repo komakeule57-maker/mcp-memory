@@ -1947,17 +1947,27 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()),
     # waren dasselbe, bis die Kettenentdoppelung dazukam; getrennt sind sie,
     # damit ein herausgefallenes Kettenglied nachbesetzt werden kann.
     holen = vorrat or limit
+    als_frage = ""
     if _ist_explizite_syntax(query):
         rows, fehler = _suche(conn, _mit_marke(_auf_inhalt(query), kl), holen, filter_)
-        return rows, fehler, ""
+        if fehler is None:
+            return rows, fehler, ""
+        # Ungueltige Syntax ist fast nie verunglueckte Syntax, sondern eine
+        # gewoehnliche Frage mit Satzzeichen: "Ueberblick: welche Werkzeuge?"
+        # liest FTS5 als Spaltenfilter ("no such column: Ueberblick"), eine
+        # Uhrzeit "12:30" und "(lokal)?" genauso. Gemessen 2026-10-04: 3 von 24
+        # natuerlich formulierten Fragen liefen so ins Leere. Also dieselbe
+        # Frage als Wortfolge durch die Kaskade - gueltige Syntax bleibt, was
+        # sie war.
+        als_frage = " (Sonderzeichen ignoriert - keine gueltige FTS5-Syntax)"
 
     terme = _terme(query)
     if not terme:
-        return [], None, ""
+        return ([], fehler, "") if als_frage else ([], None, "")
 
     genau = " AND ".join(f'{{content tags}} : "{t}"' for t in terme)
     rows, fehler = _suche(conn, _mit_marke(genau, kl), holen, filter_)
-    hinweis = ""
+    hinweis = als_frage
     if len(terme) > 1:
         # Die Wortfolge nach vorn. AND ueber getrennte Token laesst BM25 nur
         # Haeufigkeit werten, nicht Nachbarschaft: bei "Deck 5" stand der
@@ -1978,7 +1988,7 @@ def _kaskade_roh(conn, query: str, limit: int, filter_=("", ()),
         oder = " OR ".join(f'{{content tags}} : "{t}"' for t in terme)
         rows, fehler = _suche(conn, _mit_marke(oder, kl), holen, filter_)
         if rows:
-            hinweis = " (ODER - kein Eintrag enthaelt alle Begriffe)"
+            hinweis = " (ODER - kein Eintrag enthaelt alle Begriffe)" + als_frage
 
     # Stufe 4: exakte Treffer behalten den Vortritt, werden aber auf einen
     # Teil der Plaetze gedeckelt, damit die Morphologie ueberhaupt sichtbar

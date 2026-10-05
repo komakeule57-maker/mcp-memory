@@ -1118,6 +1118,28 @@ def test_rueckkopplung_laesst_explizite_syntax_in_ruhe():
     assert "schon einmal so gesucht" not in ms.recall("Kessel AND Druck")
 
 
+def test_satzzeichen_in_einer_frage_sind_keine_syntax():
+    """Eine Frage mit Doppelpunkt, Klammer oder Uhrzeit ist keine FTS5-Anfrage.
+
+    Bis 2026-10-04 las FTS5 "Kessel: steht er unter Druck?" als Spaltenfilter
+    und recall meldete "no such column: Kessel". Ungueltige Syntax faellt jetzt
+    auf die Wortsuche zurueck; gueltige bleibt, was sie war.
+    """
+    ms.remember("Der Kessel steht unter Druck", tags="schiff", art="fallstrick")
+    for frage in ("Kessel: steht er unter Druck?", "Kessel (Druck)?",
+                  "Kessel um 12:30 unter Druck", "C:\\Kessel Druck"):
+        aus = ms.recall(frage)
+        assert "Ungueltige Suchanfrage" not in aus, (frage, aus)
+        assert "#1 " in aus, (frage, aus)
+        assert "Sonderzeichen ignoriert" in aus, (frage, aus)
+    # gueltige Syntax wird weiter woertlich genommen
+    assert "Sonderzeichen ignoriert" not in ms.recall("Kessel AND Druck")
+    assert "Keine Treffer" in ms.recall('"Druck Kessel"')
+    assert "#1 " in ms.recall("content: Kessel")
+    # nur Satzzeichen: bleibt eine Fehlermeldung statt einer leeren Liste
+    assert "Ungueltige Suchanfrage" in ms.recall("(:")
+
+
 # --------------------------------------------------------------------------
 # Fixkosten der Werkzeugdefinitionen
 # --------------------------------------------------------------------------
